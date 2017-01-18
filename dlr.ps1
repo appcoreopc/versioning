@@ -5,6 +5,9 @@
 #
 #
 
+# Parameters
+param([string]$outfolder = "k:\\logs")
+
 Add-Type -Path Apache.NMS.dll
 
 $global:queueName = "asbhomequote"
@@ -13,6 +16,7 @@ $global:runCount = 0
 $global:msmqHost = "activemq:tcp://localhost:61616"
 $global:daysOld = 0
 $global:connected = $false
+$global:logOutputFolder = "" 
 
 $action = {
     Write-Host "Timer elapsed at : $((Get-Date).ToString())" 
@@ -21,49 +25,69 @@ $action = {
     GetActiveQueueMessage($msmqHost)
 } 
 
-function global:logToFile([String] $content)
+function global:WriteMessage($queueMessage)
 {   
-    [System.IO.File]::AppendText("", $content)
+    Write-Host "writting message to output ...."
+    Write-Host $queueMessage.Text
+}
+
+function global:LogToFile([String] $path, [String]$fileName, $content)
+{  
+    try { 
+        [System.IO.File]::AppendText($path - $fileName, $content)
+    }
+    catch 
+    {
+        Write-Host "File write exception : " $_.Exception.Message
+    }
 }
 
 function global:GetActiveQueueMessage($url)
 {
-    
+    # Create connection
     $connection = CreateConnection
 
-    $session = $connection.CreateSession()
-    $target = [Apache.NMS.Util.SessionUtil]::GetDestination($session, "queue://$queueName")
-    Write-Host "created session  $target  . $target.IsQueue " 
+    try  { 
+            $session = $connection.CreateSession()
+            $target = [Apache.NMS.Util.SessionUtil]::GetDestination($session, "queue://$queueName")
+            Write-Host "created session  $target  . $target.IsQueue " 
 
-    # creating message queue consumer. 
-    # using the Listener - event listener might not be suitable 
-    # as we only logs expired messages in the queue. 
+            # creating message queue consumer. 
+            # using the Listener - event listener might not be suitable 
+            # as we only logs expired messages in the queue. 
 
-    $consumer =  $session.CreateConsumer($target)
-    $targetQueue = $session.GetQueue($queueName)
-    $queueBrowser = $session.CreateBrowser($targetQueue)
-    $messages = $queueBrowser.GetEnumerator()
-    
-    Write-Host "------------Connection starts---------------"
+            $consumer =  $session.CreateConsumer($target)
+            $targetQueue = $session.GetQueue($queueName)
+            $queueBrowser = $session.CreateBrowser($targetQueue)
+            $messages = $queueBrowser.GetEnumerator()
+            
+            $connection.Start()
+            
+            if ($messages.moveNext())
+            {
+                $currentMessage = $messages.Current
+                $messageTimestamp = getLocalDateTime $currentMessage.Timestamp
 
-     $connection.Start()
-    
-    if ($messages.moveNext())
-    {
-        $currentMessage = $messages.Current
-        $messageTimestamp = getLocalDateTime $currentMessage.Timestamp
+                $messageDays = $(Get-Date).Subtract($messageTimestamp).Days
+                Write-Host "MessageDays: $messageDays" -ForegroundColor Blue
 
-        $messageDays = $(Get-Date).Subtract($messageTimestamp).Days
-        Write-Host "MessageDays: $messageDays" -ForegroundColor Blue
+                $imsg = $consumer.Receive([TimeSpan]::FromMilliseconds(2000))
+                Write-Host "Reading message"
+                Write-Host $imsg -ForegroundColor Green
 
-        $imsg = $consumer.Receive([TimeSpan]::FromMilliseconds(2000))
-        Write-Host "Reading message"
-        Write-Host $imsg -ForegroundColor Green
-     }   
+                if ($imsg -ne $null) 
+                {
+                    WriteMesage($imsg)
+                }
+            }   
 
-     Write-Host "Closing connection"
-     $connection.Close()
-     RestartTimer
+            Write-Host "Closing connection"
+            $connection.Close()
+            RestartTimer
+    }
+    catch {
+        Write-Host "Core module error : $_.Exception.Message."
+    }
 }
 
 function global:CreateConnection()
@@ -106,8 +130,10 @@ function global:RestartTimer()
     $timer.Start();
 }
 
-function main()
+function main($outfolder)
 {   
+    $logOutputFolder = $outfolder
+    Write-Host "Output folder : $logOutputFolder"
     setupTimer 
 }
 
@@ -127,5 +153,7 @@ function global:getLocalDateTime($time)
     return $epoch.AddSeconds($unixTime).ToLocalTime()
 }
 
+# Parameter 
+
 # Execute main powershell module 
-main 
+main $outfolder 
