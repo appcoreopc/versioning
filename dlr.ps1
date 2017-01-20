@@ -9,7 +9,7 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$outfolder = "k:\\logs",
     [Parameter(Mandatory=$true)]
-    [string]$hostname = "activemq:tcp://localhost:61616",
+    [string]$hostname = "activemq:tcp://localhost:61617",
     [Parameter(Mandatory=$true)]
     [string]$myQueue = "asbhomequote" 
     )
@@ -24,41 +24,42 @@ $global:daysOld = 0
 $global:connected = $false
 $global:logOutputFolder = "" 
 
-# $action = {
-#     Write-Host "Timer elapsed at : $((Get-Date).ToString())" 
-#     Write-Host "Stopping timer execution...."
-#     $timer.Stop();
-#     GetActiveQueueMessage($msmqHost)
-# } 
-
 function global:WriteMessage($queueMessage)
 {   
-    Write-Host "Writting message to output ...."
-    Write-Host $queueMessage.Text
+    #Write-Host $queueMessage.Text
+    Write-Host "Finding correlationId"
+    $correlationMatch = [regex]::matches($queueMessage.Text, 'CorrelationId="\w+-\w+-\w+-\w+-\w+"')
+    
+    if ($correlationMatch.Success -eq $true)
+    {
+       $correlationId = [regex]::matches($correlationMatch.Value, '"([^"]*)"').Groups[1].Value
+       Write-Host "CorrelationId : [$correlationId]"
+       LogToFile $logOutputFolder $correlationId $queueMessage.Text
+    }    
 }
 
 function global:LogToFile([String] $path, [String]$fileName, $content)
 {  
     try { 
-        [System.IO.File]::AppendText($path - $fileName, $content)
+        $fileToWrite = "$path\$fileName.log"
+        [System.IO.File]::AppendAllText($fileToWrite, $content)
     }
     catch 
     {
-        Write-Host "File write exception : " $_.Exception.Message
+        Write-Host "File write exception : " $_.Exception.Message -ForegroundColor red
     }
 }
 
 function global:GetActiveQueueMessage($activeMqHostUrl)
-{
-   
+{   
     Write-Host "Connecting to the following activemq : $activeMqHostUrl" -ForegroundColor Cyan
     # Create connection
-    $connection = CreateConnection($activeMqHostUrl)
+    $connection = CreateConnection $activeMqHostUrl
 
     try  { 
             $session = $connection.CreateSession()
             $target = [Apache.NMS.Util.SessionUtil]::GetDestination($session, "queue://$queueName")
-            Write-Host "created session  $target  . $target.IsQueue " 
+            Write-Host "Created session  $target  . $target.IsQueue " 
 
             # creating message queue consumer. 
             # using the Listener - event listener might not be suitable 
@@ -75,21 +76,22 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
             {
                 $currentMessage = $messages.Current
                 $messageTimestamp = getLocalDateTime $currentMessage.Timestamp
+                Write-Host $currentMessage
 
                 $messageDays = $(Get-Date).Subtract($messageTimestamp).Days
                 Write-Host "MessageDays: $messageDays" -ForegroundColor Blue
 
                 $imsg = $consumer.Receive([TimeSpan]::FromMilliseconds(2000))
-                Write-Host "Reading message"
-                Write-Host $imsg -ForegroundColor Green
+                Write-Host "Receiving messages"
+                #Write-Host $imsg -ForegroundColor Green
 
                 if ($imsg -ne $null) 
                 {
-                    WriteMesage($imsg)
+                    WriteMessage($imsg)
                 }
             }   
 
-            Write-Host "Closing connection"
+            Write-Host "Closing connection."
             $connection.Close()
             RestartTimer
     }
@@ -97,7 +99,6 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
         Write-Host "Core module error : $_.Exception.Message."
     }
     finally {
-
     }
 }
 
@@ -122,8 +123,11 @@ function global:CreateConnection($targetConnectionUrl)
     #$username = $MyCredential.UserName.toString()
     #$password = $MyCredential.GetNetworkCredential().Password
 
-    $username = "si557912"
-    $password = "!0nicFrame"
+    $username = "admin"
+    $password = "admin"
+
+    #$username = "si557912"
+    #$password = "!0nicFrame"
 
     Write-Host "Logging in as : $username"
 
@@ -145,27 +149,19 @@ function global:RestartTimer()
     $timer.Start();
 }
 
-function Main($outfolder, $hostname, $queue)
-{   
-    # assignment to global variables 
-    $logOutputFolder = $outfolder
-    $msmqHost = $hostname
-    $queueName = $queue
-
-    # Kick start timer 
-    SetupTimer 
-}
+#
+# 
 
 function SetupTimer()
 {
-    Write-Host "register timer event"
-    #Register-ObjectEvent $timer -EventName Elapsed -Action $action
-
+    Write-Host "Register timer event."
+    
     Register-ObjectEvent $timer -EventName Elapsed -Action  {
         Write-Host "Timer elapsed at : $((Get-Date).ToString())" 
-        Write-Host "Stopping timer execution...."
+        Write-Host "Stopping timer execution"
         $timer.Stop();
-        GetActiveQueueMessage($msmqHost)
+        Write-Host "Get messages from $msmqHost"
+        GetActiveQueueMessage $msmqHost
     } 
 
     Write-Host "Restarting Timer"
@@ -180,7 +176,19 @@ function global:getLocalDateTime($time)
     return $epoch.AddSeconds($unixTime).ToLocalTime()
 }
 
-# Parameter 
+function Main($outfolder, $hostname, $queue)
+{   
+    # assignment to global variables 
+    $global:logOutputFolder = $outfolder
+    $global:msmqHost = $hostname
+    $global:queueName = $queue
 
+    Write-Host "Folder : $logOutputFolder; Host : $msmqHost; Q: $queueName"
+    # Kick start timer 
+    SetupTimer 
+}
+
+# Parameter 
 # Execute main powershell module 
 Main $outfolder $hostname $myQueue
+
