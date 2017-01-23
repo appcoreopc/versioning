@@ -4,59 +4,55 @@
 #
 #
 # Parameters
-
 param(
     [Parameter(Mandatory=$true)]
-    [string]$outfolder = "k:\\logs",
+    [string]$outfolder,
     [Parameter(Mandatory=$true)]
-    [string]$hostname = "activemq:tcp://localhost:61617",
+    [string]$hostname,
     [Parameter(Mandatory=$true)]
-    [string]$myQueue = "asbhomequote" 
+    [string]$myQueue, 
+    [Parameter(Mandatory=$true)]
+    [string]$encryptionKey, 
+    [Parameter(Mandatory=$true)]
+    [string]$username 
     )
 
 Add-Type -Path Apache.NMS.dll
 
-$global:queueName = "asbhomequote"
+$global:queueName = ""
 $global:timer = New-Object System.Timers.Timer(5000)
 $global:runCount = 0
-$global:msmqHost = "activemq:tcp://w12dvipfmom01:61616"
-$global:daysOld = 0
+$global:msmqHost = ""
+$global:daysOld = 0  # age of message in day
 $global:connected = $false
 $global:logOutputFolder = "" 
+$global:encryptionKey;
+$global:username;
 
 function global:WriteMessage($queueMessage)
 {   
-    #Write-Host $queueMessage.Text
-    # Write-Host "Finding correlationId"
-    # $correlationMatch = [regex]::matches($queueMessage.Text, 'CorrelationId="\w+-\w+-\w+-\w+-\w+"')
-    # if ($correlationMatch.Success -eq $true)
-    # {
-    #    $correlationId = [regex]::matches($correlationMatch.Value, '"([^"]*)"').Groups[1].Value
-    #    Write-Host "CorrelationId : [$correlationId]"
-    #    LogToFile $logOutputFolder $correlationId $queueMessage.Text
-    # }    
-
-    FindCorrelationId($queueMessage)
+   FindCorrelationId($queueMessage)
 }
 
 function global:FindCorrelationId($queueMessage)
 {
     $correlationMatch = [regex]::matches($queueMessage.Text, 'CorrelationId="\w+-\w+-\w+-\w+-\w+"')
-    if ($correlationMatch.Success -eq $true)
-    {
-       $correlationId = [regex]::matches($correlationMatch.Value, '"([^"]*)"').Groups[1].Value
-       Write-Host $$correlationId
-       LogToFile $logOutputFolder $correlationId $queueMessage.Text
-    }  
-    else {
-    $xmlCorrelationMatch = [regex]::matches($queueMessage.Text, 'correlationId>\w+-\w+-\w+-\w+-\w+<')
-    if ($xmlCorrelationMatch.Success -eq $true)
-    {
-        $correlationId = [regex]::matches($xmlCorrelationMatch.Value, '>([^>]*)<').Groups[1].Value 
+        if ($correlationMatch.Success -eq $true)
+        {
+        $correlationId = [regex]::matches($correlationMatch.Value, '"([^"]*)"').Groups[1].Value
         Write-Host $$correlationId
         LogToFile $logOutputFolder $correlationId $queueMessage.Text
-    }
-    }
+        }  
+        else 
+        {
+            $xmlCorrelationMatch = [regex]::matches($queueMessage.Text, 'correlationId>\w+-\w+-\w+-\w+-\w+<')
+            if ($xmlCorrelationMatch.Success -eq $true)
+            {
+                $correlationId = [regex]::matches($xmlCorrelationMatch.Value, '>([^>]*)<').Groups[1].Value 
+                Write-Host $$correlationId
+                LogToFile $logOutputFolder $correlationId $queueMessage.Text
+            }
+        }
 }
 
 function global:LogToFile([String] $path, [String]$fileName, $content)
@@ -131,26 +127,21 @@ function global:CreateConnection($targetConnectionUrl)
     $factory =  New-Object Apache.NMS.NMSConnectionFactory($uri)
 
     # Getting user credentials and key info
-    $key = [Byte[]] $key = (1..16) # will be an input from users, harcoding for now. 
+    $key = [System.Text.Encoding]::UTF8.GetBytes($encryptionKey.Trim())
     $File = ".\Password.txt"
 
     if (![System.IO.File]::Exists($path) -eq $false)  
     {
-         Write-Host "Unable to find credential 'Password.txt' file. Please ensure this file is in the current folder." 
+         Write-Host "Unable to find credential 'Password.txt' file. Please ensure this file is in the current folder."  -ForegroundColor Red
          Exit
     }
    
-    #$MyCredential=New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList "admin", (Get-Content $File | ConvertTo-SecureString -Key $key)
-    #$username = $MyCredential.UserName.toString()
-    #$password = $MyCredential.GetNetworkCredential().Password
+    $MyCredential=New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $username, (Get-Content $File | ConvertTo-SecureString -Key $key)
+    $username = $MyCredential.UserName.toString()
+    $password = $MyCredential.GetNetworkCredential().Password
 
-    $username = "admin"
-    $password = "admin"
-
-    #$username = "si557912"
-    #$password = "!0nicFrame"
-
-    Write-Host "Logging in as : $username"
+    #$username = "admin"
+    #$password = "admin"
 
     try {
         $connection = $factory.CreateConnection($username, $password)
@@ -195,13 +186,15 @@ function global:GetLocalDateTime($time)
     return $epoch.AddSeconds($unixTime).ToLocalTime()
 }
 
-function Main($outfolder, $hostname, $queue)
+function Main($outfolder, $hostname, $queue, $encryptionKey, $username)
 {   
     # assignment to global variables 
     $global:logOutputFolder = $outfolder
     $global:msmqHost = $hostname
     $global:queueName = $queue
-
+    $global:encryptionKey = $encryptionKey
+    $global:username = $username
+    
     Write-Host "Folder : $logOutputFolder; Host : $msmqHost; Q: $queueName"
     # Kick start timer 
     SetupTimer 
@@ -209,5 +202,5 @@ function Main($outfolder, $hostname, $queue)
 
 # Parameter 
 # Execute main powershell module 
-Main $outfolder $hostname $myQueue
+Main $outfolder $hostname $myQueue $encryptionKey $username
 
