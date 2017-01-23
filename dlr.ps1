@@ -2,8 +2,10 @@
 # A powershell script to read from any ActiveMq provider
 # $MyCredential=New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList "admin", (Get-Content $File | ConvertTo-SecureString -Key $key)
 #
-#
+# Example command 
+# .\dlr.ps1 -outfolder "k:\\log" -hostname "activemq:tcp://localhost:61616" -myqueue "asbhomequote" -encryptionKey 1234567890123456 -username admin
 # Parameters
+
 param(
     [Parameter(Mandatory=$true)]
     [string]$outfolder,
@@ -36,12 +38,12 @@ function global:WriteMessage($queueMessage)
 
 function global:FindCorrelationId($queueMessage)
 {
-    $correlationMatch = [regex]::matches($queueMessage.Text, 'CorrelationId="\w+-\w+-\w+-\w+-\w+"')
+        $correlationMatch = [regex]::matches($queueMessage.Text, 'CorrelationId="\w+-\w+-\w+-\w+-\w+"')
         if ($correlationMatch.Success -eq $true)
         {
-        $correlationId = [regex]::matches($correlationMatch.Value, '"([^"]*)"').Groups[1].Value
-        Write-Host $$correlationId
-        LogToFile $logOutputFolder $correlationId $queueMessage.Text
+            $correlationId = [regex]::matches($correlationMatch.Value, '"([^"]*)"').Groups[1].Value
+            Write-Host $correlationId
+            LogToFile $logOutputFolder $correlationId $queueMessage.Text
         }  
         else 
         {
@@ -49,7 +51,7 @@ function global:FindCorrelationId($queueMessage)
             if ($xmlCorrelationMatch.Success -eq $true)
             {
                 $correlationId = [regex]::matches($xmlCorrelationMatch.Value, '>([^>]*)<').Groups[1].Value 
-                Write-Host $$correlationId
+                Write-Host $correlationId
                 LogToFile $logOutputFolder $correlationId $queueMessage.Text
             }
         }
@@ -67,6 +69,12 @@ function global:LogToFile([String] $path, [String]$fileName, $content)
     }
 }
 
+function global:CleanUp()
+{
+    Write-Host "Cleaning up resources used."
+    $timer.Stop 
+}
+
 function global:GetActiveQueueMessage($activeMqHostUrl)
 {   
     Write-Host "Connecting to the following activemq : $activeMqHostUrl" -ForegroundColor Cyan
@@ -76,7 +84,7 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
     try  { 
             $session = $connection.CreateSession()
             $target = [Apache.NMS.Util.SessionUtil]::GetDestination($session, "queue://$queueName")
-            Write-Host "Created session  $target  . $target.IsQueue " 
+            Write-Host "Establishing session to Queue :  $target  . $target.IsQueue " -ForegroundColor DarkCyan
 
             # creating message queue consumer. 
             # using the Listener - event listener might not be suitable 
@@ -87,19 +95,30 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
             $queueBrowser = $session.CreateBrowser($targetQueue)
             $messages = $queueBrowser.GetEnumerator()
 
-            $connection.Start()
+            $connection.Start()            
+            Write-Host "Successfully started a connection to server." -ForegroundColor Green
+            Write-Host "Examining objects" -ForegroundColor Yellow
+            
+            #Write-Host "Consumer : [$consumer], Queue : [$targetQueue], QueueBrowser : [$queueBrowser]" -ForegroundColor Yellow
+            #Write-Host "Peek at messages in queue : [$queueBrowser.Queue.QueueName] / $queueBrowser.MessageSelector : [$messages]"  -ForegroundColor Yellow
             
             if ($messages.moveNext())
             {
                 $currentMessage = $messages.Current
                 $messageTimestamp = GetLocalDateTime $currentMessage.Timestamp
-                Write-Host $currentMessage
+                Write-Host "Info for current message queue : $currentMessage" -ForegroundColor Yellow
 
                 $messageDays = $(Get-Date).Subtract($messageTimestamp).Days
                 Write-Host "MessageDays: $messageDays" -ForegroundColor Blue
+                
+                if ($messageDays -lt $daysOld)
+                {
+                    Write-Host "Exiting - Message placed in queue does not meet age criteria."
+                    Exit  # Terminate apps if 
+                }
 
                 $imsg = $consumer.Receive([TimeSpan]::FromMilliseconds(2000))
-                Write-Host "Receiving messages"
+                Write-Host "Receiving messages."
                 #Write-Host $imsg -ForegroundColor Green
 
                 if ($imsg -ne $null) 
@@ -116,12 +135,13 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
         Write-Host "Core module error : $_.Exception.Message."
     }
     finally {
+        CleanUp
     }
 }
 
 function global:CreateConnection($targetConnectionUrl)
 {
-    Write-Host "Start connecting to $targetConnectionUrl at : $((Get-Date).ToString())" 
+    Write-Host "Preparing connectivity info to $targetConnectionUrl at : $((Get-Date).ToString())" 
     $uri = [System.Uri]$targetConnectionUrl
     Write-Host "Target activeMq location : $uri"
     $factory =  New-Object Apache.NMS.NMSConnectionFactory($uri)
@@ -145,7 +165,7 @@ function global:CreateConnection($targetConnectionUrl)
 
     try {
         $connection = $factory.CreateConnection($username, $password)
-        Write-Host "Successfully connect to : $connection" -ForegroundColor Green
+        Write-Host "Creating connection object : $connection" -ForegroundColor Green
         return $connection
     }
     catch {
@@ -203,4 +223,3 @@ function Main($outfolder, $hostname, $queue, $encryptionKey, $username)
 # Parameter 
 # Execute main powershell module 
 Main $outfolder $hostname $myQueue $encryptionKey $username
-
