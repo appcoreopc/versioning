@@ -27,15 +27,36 @@ $global:logOutputFolder = ""
 function global:WriteMessage($queueMessage)
 {   
     #Write-Host $queueMessage.Text
-    Write-Host "Finding correlationId"
+    # Write-Host "Finding correlationId"
+    # $correlationMatch = [regex]::matches($queueMessage.Text, 'CorrelationId="\w+-\w+-\w+-\w+-\w+"')
+    # if ($correlationMatch.Success -eq $true)
+    # {
+    #    $correlationId = [regex]::matches($correlationMatch.Value, '"([^"]*)"').Groups[1].Value
+    #    Write-Host "CorrelationId : [$correlationId]"
+    #    LogToFile $logOutputFolder $correlationId $queueMessage.Text
+    # }    
+
+    FindCorrelationId($queueMessage)
+}
+
+function global:FindCorrelationId($queueMessage)
+{
     $correlationMatch = [regex]::matches($queueMessage.Text, 'CorrelationId="\w+-\w+-\w+-\w+-\w+"')
-    
     if ($correlationMatch.Success -eq $true)
     {
        $correlationId = [regex]::matches($correlationMatch.Value, '"([^"]*)"').Groups[1].Value
-       Write-Host "CorrelationId : [$correlationId]"
+       Write-Host $$correlationId
        LogToFile $logOutputFolder $correlationId $queueMessage.Text
-    }    
+    }  
+    else {
+    $xmlCorrelationMatch = [regex]::matches($queueMessage.Text, 'correlationId>\w+-\w+-\w+-\w+-\w+<')
+    if ($xmlCorrelationMatch.Success -eq $true)
+    {
+        $correlationId = [regex]::matches($xmlCorrelationMatch.Value, '>([^>]*)<').Groups[1].Value 
+        Write-Host $$correlationId
+        LogToFile $logOutputFolder $correlationId $queueMessage.Text
+    }
+    }
 }
 
 function global:LogToFile([String] $path, [String]$fileName, $content)
@@ -75,7 +96,7 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
             if ($messages.moveNext())
             {
                 $currentMessage = $messages.Current
-                $messageTimestamp = getLocalDateTime $currentMessage.Timestamp
+                $messageTimestamp = GetLocalDateTime $currentMessage.Timestamp
                 Write-Host $currentMessage
 
                 $messageDays = $(Get-Date).Subtract($messageTimestamp).Days
@@ -111,11 +132,11 @@ function global:CreateConnection($targetConnectionUrl)
 
     # Getting user credentials and key info
     $key = [Byte[]] $key = (1..16) # will be an input from users, harcoding for now. 
-    $File = ".\password.txt"
+    $File = ".\Password.txt"
 
     if (![System.IO.File]::Exists($path) -eq $false)  
     {
-         Write-Host "Unable to find credential file." 
+         Write-Host "Unable to find credential 'Password.txt' file. Please ensure this file is in the current folder." 
          Exit
     }
    
@@ -149,8 +170,6 @@ function global:RestartTimer()
     $timer.Start();
 }
 
-#
-# 
 
 function SetupTimer()
 {
@@ -168,7 +187,7 @@ function SetupTimer()
     $timer.Start()    
 }
 
-function global:getLocalDateTime($time)
+function global:GetLocalDateTime($time)
 {
     $timeStr = $time.toString()
     $unixTime = $timeStr.subString(0, $timeStr.Length - 3)
