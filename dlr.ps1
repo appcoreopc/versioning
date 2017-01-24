@@ -7,7 +7,9 @@
 # If older, read and pop it off the queue.
 # 
 # Example command 
-# .\dlr.ps1 -outfolder "k:\\log" -hostname "activemq:tcp://localhost:61616" -myqueue "asbhomequote" -encryptionKey 1234567890123456 -username admin
+# Reading from a queue with a 5 minute wait time 
+# .\dlr.ps1 -outfolder "k:\\log" -hostname "activemq:tcp://localhost:61616" -myqueue "asbhomequote" -encryptionKey 1234567890123456 -username admin -messageAgeInMinutes 5
+
 # Please remember to set Preference to a read/write credential for reading/writting to a queue.
 # Parameters
 
@@ -21,7 +23,8 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$encryptionKey, 
     [Parameter(Mandatory=$true)]
-    [string]$username 
+    [string]$username,
+    [int]$messageAgeInMinutes
     )
 
 Add-Type -Path Apache.NMS.dll
@@ -30,7 +33,7 @@ $global:queueName = ""
 $global:timer = New-Object System.Timers.Timer(5000)
 $global:runCount = 0
 $global:msmqHost = ""
-$global:maxAgeDayLimit = 5  # age of message in day
+$global:maxAgeDayLimit = 60 * 24  # age of message in day
 $global:connected = $false
 $global:logOutputFolder = "" 
 $global:encryptionKey;
@@ -231,7 +234,7 @@ function global:GetLocalDateTime($time)
     return $epoch.AddSeconds($unixTime).ToLocalTime()
 }
 
-function Main($outfolder, $hostname, $queue, $encryptionKey, $username)
+function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $messageAgeInMinutes)
 {   
     # assignment to global variables 
     $global:logOutputFolder = $outfolder
@@ -239,12 +242,18 @@ function Main($outfolder, $hostname, $queue, $encryptionKey, $username)
     $global:queueName = $queue
     $global:encryptionKey = $encryptionKey
     $global:username = $username
-    
-    Write-Host "Folder : $logOutputFolder; Host : $msmqHost; Q: $queueName"
+
+    if ($messageAgeInMinutes -ne 0)
+    {
+        $global:maxAgeDayLimit = $messageAgeInMinutes
+    }
+    Write-Host "-----------------------------------------------------------------------------------------------"
+    Write-Host "Folder : $logOutputFolder; Host : $msmqHost; Q: $queueName; Message time in Q (minutes): $maxAgeDayLimit" -ForegroundColor Cyan
+    Write-Host "-----------------------------------------------------------------------------------------------"
     # Kick start timer 
     SetupTimer 
 }
 
 # Parameter 
 # Execute main powershell module 
-Main $outfolder $hostname $myQueue $encryptionKey $username
+Main $outfolder $hostname $myQueue $encryptionKey $username $messageAgeInMinutes
