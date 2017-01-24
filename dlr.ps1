@@ -2,8 +2,13 @@
 # A powershell script to read from any ActiveMq provider
 # $MyCredential=New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList "admin", (Get-Content $File | ConvertTo-SecureString -Key $key)
 #
+# Summary : Read messages from a specific queue if it is older than (x) days.
+# Peek messages in a queue to validate age
+# If older, read and pop it off the queue.
+# 
 # Example command 
 # .\dlr.ps1 -outfolder "k:\\log" -hostname "activemq:tcp://localhost:61616" -myqueue "asbhomequote" -encryptionKey 1234567890123456 -username admin
+# Please remember to set Preference to a read/write credential for reading/writting to a queue.
 # Parameters
 
 param(
@@ -25,7 +30,7 @@ $global:queueName = ""
 $global:timer = New-Object System.Timers.Timer(5000)
 $global:runCount = 0
 $global:msmqHost = ""
-$global:daysOld = 0  # age of message in day
+$global:daysOld = 1  # age of message in day
 $global:connected = $false
 $global:logOutputFolder = "" 
 $global:encryptionKey;
@@ -80,56 +85,49 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
     Write-Host "Connecting to the following activemq : $activeMqHostUrl" -ForegroundColor Cyan
     # Create connection
     $connection = CreateConnection $activeMqHostUrl
-
+    
     try  { 
             $session = $connection.CreateSession()
             $target = [Apache.NMS.Util.SessionUtil]::GetDestination($session, "queue://$queueName")
-            Write-Host "Establishing session to Queue :  $target  . $target.IsQueue " -ForegroundColor DarkCyan
+            Write-Host "Establishing session to Queue :  $target  ---   $target.IsQueue " -ForegroundColor DarkCyan
 
             # creating message queue consumer. 
             # using the Listener - event listener might not be suitable 
             # as we only logs expired messages in the queue. 
 
             $consumer =  $session.CreateConsumer($target)
-            $targetQueue = $session.GetQueue($queueName)
-            $queueBrowser = $session.CreateBrowser($targetQueue)
-            $messages = $queueBrowser.GetEnumerator()
 
             $connection.Start()            
             Write-Host "Successfully started a connection to server." -ForegroundColor Green
-            Write-Host "Examining objects" -ForegroundColor Yellow
-            
-            #Write-Host "Consumer : [$consumer], Queue : [$targetQueue], QueueBrowser : [$queueBrowser]" -ForegroundColor Yellow
-            #Write-Host "Peek at messages in queue : [$queueBrowser.Queue.QueueName] / $queueBrowser.MessageSelector : [$messages]"  -ForegroundColor Yellow
-            
-            if ($messages.moveNext())
+
+            # Get old enuff messages from the queue 
+            $msgCount = PeekMessageQueue $queueName 
+
+            if ($msgCount -gt 0) 
             {
-                $currentMessage = $messages.Current
-                $messageTimestamp = GetLocalDateTime $currentMessage.Timestamp
-                Write-Host "Info for current message queue : $currentMessage" -ForegroundColor Yellow
-
-                $messageDays = $(Get-Date).Subtract($messageTimestamp).Days
-                Write-Host "MessageDays: $messageDays" -ForegroundColor Blue
-                
-                if ($messageDays -lt $daysOld)
+                Write-Host "Trying to receive/archive messages"
+                $receiveMessageCount = 0
+                while (($imsg = $consumer.Receive([TimeSpan]::FromMilliseconds(2000))) -ne $null) 
                 {
-                    Write-Host "Exiting - Message placed in queue does not meet age criteria."
-                    Exit  # Terminate apps if 
+                    $receiveMessageCount = $receiveMessageCount + 1
+                    Write-Host "Popping messages from queue. [$receiveMessageCount]" 
+
+                    if ($imsg -ne $null) 
+                    {
+                        WriteMessage($imsg)
+                    }
+
+                    if ( $receiveMessageCount -eq $msgCount )
+                    {
+                        Write-Host "Messages to be taken out of the queue reached." -ForegroundColor Blue
+                        break;
+                    }
                 }
+            }
 
-                $imsg = $consumer.Receive([TimeSpan]::FromMilliseconds(2000))
-                Write-Host "Receiving messages."
-                #Write-Host $imsg -ForegroundColor Green
-
-                if ($imsg -ne $null) 
-                {
-                    WriteMessage($imsg)
-                }
-            }   
-
-            Write-Host "Closing connection."
+            Write-Host "Closing connection." -ForegroundColor Yellow
             $connection.Close()
-            RestartTimer
+            #RestartTimer # Disable this feature for the time being.
     }
     catch {
         Write-Host "Core module error : $_.Exception.Message."
@@ -137,6 +135,33 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
     finally {
         CleanUp
     }
+}
+
+function global:PeekMessageQueue($queueName)
+{
+    $count = 0;
+    $targetQueue = $session.GetQueue($queueName)
+    $queueBrowser = $session.CreateBrowser($targetQueue)
+    $messages = $queueBrowser.GetEnumerator()
+
+    Write-Host "Peeking message using component : $targetQueue" -ForegroundColor Yellow
+    while ($messages.moveNext())
+    {
+           $currentMessage = $messages.Current
+           $messageTimestamp = GetLocalDateTime $currentMessage.Timestamp
+           
+           $messageDays = $(Get-Date).Subtract($messageTimestamp).Days
+           Write-Host "Message diff age is : $messageDays" -ForegroundColor DarkYellow
+                
+           if ($messageDays -lt $daysOld)
+           {
+             break; 
+           }
+           $count = $count  + 1
+    }
+    
+    Write-Host "Total number of records to pop from queue are : $count"
+    return $count;
 }
 
 function global:CreateConnection($targetConnectionUrl)
@@ -159,10 +184,7 @@ function global:CreateConnection($targetConnectionUrl)
     $MyCredential=New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $username, (Get-Content $File | ConvertTo-SecureString -Key $key)
     $username = $MyCredential.UserName.toString()
     $password = $MyCredential.GetNetworkCredential().Password
-
-    #$username = "admin"
-    #$password = "admin"
-
+    
     try {
         $connection = $factory.CreateConnection($username, $password)
         Write-Host "Creating connection object : $connection" -ForegroundColor Green
