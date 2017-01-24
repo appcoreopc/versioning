@@ -30,7 +30,7 @@ $global:queueName = ""
 $global:timer = New-Object System.Timers.Timer(5000)
 $global:runCount = 0
 $global:msmqHost = ""
-$global:daysOld = 1  # age of message in day
+$global:maxAgeDayLimit = 5  # age of message in day
 $global:connected = $false
 $global:logOutputFolder = "" 
 $global:encryptionKey;
@@ -127,7 +127,7 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
 
             Write-Host "Closing connection." -ForegroundColor Yellow
             $connection.Close()
-            #RestartTimer # Disable this feature for the time being.
+            #RestartTimer # Disable this feature for now.
     }
     catch {
         Write-Host "Core module error : $_.Exception.Message."
@@ -145,21 +145,24 @@ function global:PeekMessageQueue($queueName)
     $messages = $queueBrowser.GetEnumerator()
 
     Write-Host "Peeking message using component : $targetQueue" -ForegroundColor Yellow
-    while ($messages.moveNext())
+    while ($messages.MoveNext())
     {
            $currentMessage = $messages.Current
            $messageTimestamp = GetLocalDateTime $currentMessage.Timestamp
            
-           $messageDays = $(Get-Date).Subtract($messageTimestamp).Days
+           #$messageDays = $(Get-Date).Subtract($messageTimestamp).Days
+           $messageDays = $(Get-Date).Subtract($messageTimestamp).Minutes
            Write-Host "Message diff age is : $messageDays" -ForegroundColor DarkYellow
-                
-           if ($messageDays -lt $daysOld)
+
+           # kicks out, if message is less than a day old #     
+           if ($messageDays -lt $maxAgeDayLimit)
            {
              break; 
            }
            $count = $count  + 1
     }
-    
+
+    $queueBrowser.Close()
     Write-Host "Total number of records to pop from queue are : $count"
     return $count;
 }
