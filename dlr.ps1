@@ -8,7 +8,7 @@
 # 
 # Example command 
 # Reading from a queue with a 5 minute wait time 
-# .\dlr.ps1 -outfolder "k:\\log" -hostname "activemq:tcp://localhost:61616" -myqueue "asbhomequote" -encryptionKey 1234567890123456 -username admin -messageAgeInMinutes 5
+# .\dlq.ps1 -outfolder "k:\\log" -hostname "activemq:tcp://localhost" -myqueue "asbhomequote" -encryptionKey 1234567890123456 -username admin -messageAgeInMinutes 5
 
 # Please remember to set Preference to a read/write credential for reading/writting to a queue.
 # Parameters
@@ -85,6 +85,16 @@ function global:CleanUp()
 
 function global:GetActiveQueueMessage($activeMqHostUrl)
 {   
+    $hostsPort = @(61616, 61617)
+    foreach ($port in $hostsPort)
+    {
+        GetQueueMessage($activeMqHostUrl + ":" + $port);    
+    }    
+}
+
+function global:GetQueueMessage($activeMqHostUrl)
+{
+
     Write-Host "Connecting to the following activemq : $activeMqHostUrl" -ForegroundColor Cyan
     # Create connection
     $connection = CreateConnection $activeMqHostUrl
@@ -114,6 +124,7 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
                 {
                     $receiveMessageCount = $receiveMessageCount + 1
                     Write-Host "Popping messages from queue. [$receiveMessageCount]" 
+                    Write-Host $imsg
 
                     if ($imsg -ne $null) 
                     {
@@ -248,7 +259,7 @@ function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $message
         $global:maxAgeDayLimit = $messageAgeInMinutes
     }
     Write-Host "-----------------------------------------------------------------------------------------------"
-    Write-Host "Folder : $logOutputFolder; Host : $msmqHost; Q: $queueName; Message time in Q (minutes): $maxAgeDayLimit" -ForegroundColor Cyan
+    Write-Host "Folder : $logOutputFolder; Host: $msmqHost; Q: $queueName; Message time in Q (minutes): $maxAgeDayLimit" -ForegroundColor Cyan
     Write-Host "-----------------------------------------------------------------------------------------------"
     # Kick start timer 
     SetupTimer 
