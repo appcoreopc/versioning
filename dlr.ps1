@@ -6,6 +6,7 @@
 # Peek messages in a queue to validate age
 # If older, read and pop it off the queue.
 # 
+# Feature v0.3 - Array server to pull messages, use jms's correlationId as filename, 
 # Example command 
 # Reading from a queue with a 5 minute wait time 
 # .\dlq.ps1 -outfolder "k:\\log" -hostname "activemq:tcp://localhost" -myqueue "asbhomequote" -encryptionKey 1234567890123456 -username admin -messageAgeInMinutes 5
@@ -17,7 +18,7 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$outfolder,
     [Parameter(Mandatory=$true)]
-    [string]$hostname,
+    [string[]]$hostname,
     [Parameter(Mandatory=$true)]
     [string]$myQueue, 
     [Parameter(Mandatory=$true)]
@@ -32,12 +33,13 @@ Add-Type -Path Apache.NMS.dll
 $global:queueName = ""
 $global:timer = New-Object System.Timers.Timer(5000)
 $global:runCount = 0
-$global:msmqHost = ""
+$global:msmqHost;
 $global:maxAgeDayLimit = 60 * 24  # age of message in day
 $global:connected = $false
 $global:logOutputFolder = "" 
 $global:encryptionKey;
 $global:username;
+$global:defaultFilename = "unknown" 
 
 function global:WriteMessage($queueMessage)
 {   
@@ -46,25 +48,74 @@ function global:WriteMessage($queueMessage)
 
 function global:FindCorrelationId($queueMessage)
 {
-        $correlationMatch = [regex]::matches($queueMessage.Text, 'CorrelationId="\w+-\w+-\w+-\w+-\w+"')
-        if ($correlationMatch.Success -eq $true)
+        $correlationId = $queueMessage.CorrelationId
+        if ([string]::IsNullOrEmpty($queueMessage.CorrelationId))
         {
-            $correlationId = [regex]::matches($correlationMatch.Value, '"([^"]*)"').Groups[1].Value
-            Write-Host $correlationId
-            LogToFile $logOutputFolder $correlationId $queueMessage.Text
-        }  
-        else 
-        {
-            $xmlCorrelationMatch = [regex]::matches($queueMessage.Text, 'correlationId>\w+-\w+-\w+-\w+-\w+<')
-            if ($xmlCorrelationMatch.Success -eq $true)
-            {
-                $correlationId = [regex]::matches($xmlCorrelationMatch.Value, '>([^>]*)<').Groups[1].Value 
-                Write-Host $correlationId
-                LogToFile $logOutputFolder $correlationId $queueMessage.Text
-            }
+            $correlationId = $global:defaultFilename
         }
+        Write-Host $correlationId.Trim()
+        LogMessageToFile $logOutputFolder $correlationId.Trim() $queueMessage
 }
 
+#Custom Message Property
+#Authorization
+#MULE_CORRELATION_ID
+
+function global:LogMessageToFile([String] $path, [String]$fileName, $content)
+{  
+    try { 
+        $fileToWrite = "$path\$fileName.log"
+        $jSonContent = GetJsonMessageContent $content
+        [System.IO.File]::AppendAllText($fileToWrite, $jSonContent)
+    }
+    catch 
+    {
+        Write-Host "File write exception : " $_.Exception.Message -ForegroundColor red
+    }
+}
+
+function global:GetJsonMessageContent($content)
+{
+    $jsonContent = "{
+        commandId : '$($content.commandId)',
+        responseRequired :' $($content.responseRequired)',
+        ProducerId : '$($content.ActiveMQTextMessage.ProducerId)', 
+        Destination : '$($content.ActiveMQTextMessage.Destination)',
+        TransactionId : '$($content.ActiveMQTextMessage.TransactionId)', 
+        OriginalDestination : '$($content.OriginalDestination)',
+        MessageId  : '$($content.MessageId)',
+        OriginalTransactionId : '$($content.OriginalTransactionId)',
+        GroupID : '$($content.GroupID)',
+        GroupSequence : '$($content.GroupSequence)',
+        CorrelationId : '$($content.CorrelationId)', 
+        Persistent : '$($content.Persistent)',
+        Expiration : '$($content.Expiration)', 
+        Priority : '$($content.Priority)',
+        ReplyTo : '$($content.ReplyTo)',
+        Timestamp : '$($content.Timestamp),
+        Type : '$($content.Type)', 
+        MarshalledProperties : '$($content.MarshalledProperties)',
+        DataStructure : '$($content.DataStructure)', 
+        TargetConsumerId : '$($content.TargetConsumerId)',
+        Compressed : '$($content.Compressed)', 
+        RedeliveryCounter : '$($content.RedeliveryCounter)', 
+        RecievedByDFBridge : '$($content.RecievedByDFBridge)',
+        Droppable : '$($content.Droppable)',
+        Cluster : '$($content.Cluster)',
+        BrokerInTime : '$($content.BrokerInTime)',
+        BrokerOutTime : '$($content.BrokerOutTime)',
+        JMSXGroupFirstForConsumer : '$($content.JMSXGroupFirstForConsumer)',
+        Text : '$($content.Text)', 
+        Authorization : '$($content.Properties.GetString("Authorization"))',
+        MULE_CORRELATION_ID : '$($content.Properties.GetString("MULE_CORRELATION_ID"))'
+    }"
+
+    return $jsonContent
+}
+
+################################################################################
+# 
+################################################################################
 function global:LogToFile([String] $path, [String]$fileName, $content)
 {  
     try { 
@@ -86,15 +137,18 @@ function global:CleanUp()
 function global:GetActiveQueueMessage($activeMqHostUrl)
 {   
     $hostsPort = @(61616, 61617)
-    foreach ($port in $hostsPort)
+    foreach ($hostTarget in $activeMqHostUrl)
     {
-        GetQueueMessage($activeMqHostUrl + ":" + $port);    
+        Write-Host "Hosts :[$hostTarget]"
+        foreach ($port in $hostsPort)
+        {
+            GetQueueMessage($hostTarget + ":" + $port);    
+        }
     }    
 }
 
 function global:GetQueueMessage($activeMqHostUrl)
 {
-
     Write-Host "Connecting to the following activemq : $activeMqHostUrl" -ForegroundColor Cyan
     # Create connection
     $connection = CreateConnection $activeMqHostUrl
@@ -124,7 +178,7 @@ function global:GetQueueMessage($activeMqHostUrl)
                 {
                     $receiveMessageCount = $receiveMessageCount + 1
                     Write-Host "Popping messages from queue. [$receiveMessageCount]" 
-                    Write-Host $imsg
+                    #Write-Host $imsg
 
                     if ($imsg -ne $null) 
                     {
@@ -163,8 +217,7 @@ function global:PeekMessageQueue($queueName)
     {
            $currentMessage = $messages.Current
            $messageTimestamp = GetLocalDateTime $currentMessage.Timestamp
-           
-           #$messageDays = $(Get-Date).Subtract($messageTimestamp).Days
+   
            $messageDays = $(Get-Date).Subtract($messageTimestamp).Minutes
            Write-Host "Message diff age is : $messageDays" -ForegroundColor DarkYellow
 
