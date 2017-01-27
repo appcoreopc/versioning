@@ -25,7 +25,7 @@ param(
     [string]$encryptionKey, 
     [Parameter(Mandatory=$true)]
     [string]$username,
-    [int]$messageAgeInMinutes
+    [int]$messageAge
     )
 
 Add-Type -Path Apache.NMS.dll
@@ -34,7 +34,7 @@ $global:queueName = ""
 $global:timer = New-Object System.Timers.Timer(5000)
 $global:runCount = 0
 $global:msmqHost;
-$global:maxAgeDayLimit = 60 * 24  # age of message in day
+$global:maxAgeLimit = 1  # age of message in day
 $global:connected = $false
 $global:logOutputFolder = "" 
 $global:encryptionKey;
@@ -57,10 +57,6 @@ function global:FindCorrelationId($queueMessage)
         LogMessageToFile $logOutputFolder $correlationId.Trim() $queueMessage
 }
 
-#Custom Message Property
-#Authorization
-#MULE_CORRELATION_ID
-
 function global:LogMessageToFile([String] $path, [String]$fileName, $content)
 {  
     try { 
@@ -76,9 +72,15 @@ function global:LogMessageToFile([String] $path, [String]$fileName, $content)
 
 function global:GetJsonMessageContent($content)
 {
+    #RecievedByDFBridge - Not a spelling error :) 
+
     $jsonContent = "{
         commandId : '$($content.commandId)',
+        deliveryMode : '$($content.DeliveryMode)',
+        redelivered : '$($content.redelivered)',
         responseRequired :' $($content.responseRequired)',
+        userId :' $($content.userId)',
+        brokerPath :' $($content.brokerPath)',
         ProducerId : '$($content.ActiveMQTextMessage.ProducerId)', 
         Destination : '$($content.ActiveMQTextMessage.Destination)',
         TransactionId : '$($content.ActiveMQTextMessage.TransactionId)', 
@@ -92,14 +94,14 @@ function global:GetJsonMessageContent($content)
         Expiration : '$($content.Expiration)', 
         Priority : '$($content.Priority)',
         ReplyTo : '$($content.ReplyTo)',
-        Timestamp : '$($content.Timestamp),
-        Type : '$($content.Type)', 
+        Timestamp : '$($content.Timestamp)',
         MarshalledProperties : '$($content.MarshalledProperties)',
+        Type : '$($content.Type)', 
         DataStructure : '$($content.DataStructure)', 
         TargetConsumerId : '$($content.TargetConsumerId)',
         Compressed : '$($content.Compressed)', 
         RedeliveryCounter : '$($content.RedeliveryCounter)', 
-        RecievedByDFBridge : '$($content.RecievedByDFBridge)',
+        RecievedByDFBridge : '$($content.RecievedByDFBridge)', 
         Droppable : '$($content.Droppable)',
         Cluster : '$($content.Cluster)',
         BrokerInTime : '$($content.BrokerInTime)',
@@ -107,7 +109,15 @@ function global:GetJsonMessageContent($content)
         JMSXGroupFirstForConsumer : '$($content.JMSXGroupFirstForConsumer)',
         Text : '$($content.Text)', 
         Authorization : '$($content.Properties.GetString("Authorization"))',
-        MULE_CORRELATION_ID : '$($content.Properties.GetString("MULE_CORRELATION_ID"))'
+        Content_Type : '$($content.Properties.GetString("Content_Type"))',
+        MULE_CORRELATION_ID : '$($content.Properties.GetString("MULE_CORRELATION_ID"))',
+        MULE_ENCODING : '$($content.Properties.GetString("MULE_ENCODING"))',
+        MULE_ENDPOINT : '$($content.Properties.GetString("MULE_ENDPOINT"))',
+        MULE_MESSAGE_ID : '$($content.Properties.GetString("MULE_MESSAGE_ID"))',
+        MULE_ORIGINATING_ENDPOINT : '$($content.Properties.GetString("MULE_ORIGINATING_ENDPOINT"))',
+        MULE_ROOT_MESSAGE_ID : '$($content.Properties.GetString("MULE_ROOT_MESSAGE_ID"))',
+        MULE_SESSION : '$($content.Properties.GetString("MULE_SESSION"))',
+        event_type : '$($content.Properties.GetString("event_type"))'
     }"
 
     return $jsonContent
@@ -149,9 +159,11 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
 
 function global:GetQueueMessage($activeMqHostUrl)
 {
+    $receiveMessageCount = 0
     Write-Host "Connecting to the following activemq : $activeMqHostUrl" -ForegroundColor Cyan
     # Create connection
     $connection = CreateConnection $activeMqHostUrl
+    $connection.Start()            
     
     try  { 
             $session = $connection.CreateSession()
@@ -161,36 +173,38 @@ function global:GetQueueMessage($activeMqHostUrl)
             # creating message queue consumer. 
             # using the Listener - event listener might not be suitable 
             # as we only logs expired messages in the queue. 
-
             $consumer =  $session.CreateConsumer($target)
 
-            $connection.Start()            
             Write-Host "Successfully started a connection to server." -ForegroundColor Green
-
             # Get old enuff messages from the queue 
             $msgCount = PeekMessageQueue $queueName 
 
             if ($msgCount -gt 0) 
             {
-                Write-Host "Trying to receive/archive messages"
-                $receiveMessageCount = 0
-                while (($imsg = $consumer.Receive([TimeSpan]::FromMilliseconds(2000))) -ne $null) 
-                {
+                Write-Host "Trying to archive message(s)."
+                
+                while (($imsg = $consumer.Receive([TimeSpan]::FromMilliseconds(5000))) -ne $null) 
+                {                    
                     $receiveMessageCount = $receiveMessageCount + 1
                     Write-Host "Popping messages from queue. [$receiveMessageCount]" 
-                    #Write-Host $imsg
-
+                    
                     if ($imsg -ne $null) 
                     {
                         WriteMessage($imsg)
                     }
 
-                    if ( $receiveMessageCount -eq $msgCount )
+                    if ( $receiveMessageCount -eq $msgCount)
                     {
                         Write-Host "Messages to be taken out of the queue reached." -ForegroundColor Blue
                         break;
                     }
                 }
+                
+                if ($receiveMessageCount -eq 0)
+                {
+                    Write-Host "Unable to receive messages from queue." -ForegroundColor Red
+                }
+                Write-Host "Receive message count $receiveMessageCount"
             }
 
             Write-Host "Closing connection." -ForegroundColor Yellow
@@ -212,21 +226,22 @@ function global:PeekMessageQueue($queueName)
     $queueBrowser = $session.CreateBrowser($targetQueue)
     $messages = $queueBrowser.GetEnumerator()
 
-    Write-Host "Peeking message using component : $targetQueue" -ForegroundColor Yellow
+    Write-Host "Peeking message for queue : $targetQueue" -ForegroundColor Yellow
     while ($messages.MoveNext())
     {
            $currentMessage = $messages.Current
            $messageTimestamp = GetLocalDateTime $currentMessage.Timestamp
-   
-           $messageDays = $(Get-Date).Subtract($messageTimestamp).Minutes
-           Write-Host "Message diff age is : $messageDays" -ForegroundColor DarkYellow
+           $currentDate = $(Get-Date)
+           $duration = ($currentDate - $messageTimestamp).TotalDays
 
-           # kicks out, if message is less than a day old #     
-           if ($messageDays -lt $maxAgeDayLimit)
+           # kicks out, if message not old enuff :)
+           if ($duration -lt $maxAgeLimit)
            {
              break; 
            }
            $count = $count  + 1
+           Write-Host 
+           Write-Host $currentMessage.CorrelationId "message timestamp [$messageTimestamp] diff is : $duration (day)" -ForegroundColor DarkYellow
     }
 
     $queueBrowser.Close()
@@ -292,13 +307,12 @@ function SetupTimer()
 
 function global:GetLocalDateTime($time)
 {
-    $timeStr = $time.toString()
-    $unixTime = $timeStr.subString(0, $timeStr.Length - 3)
     $epoch = New-Object -Type DateTime -ArgumentList 1970, 1, 1, 0, 0, 0, 0
-    return $epoch.AddSeconds($unixTime).ToLocalTime()
+    $targetDate = $epoch.AddMilliseconds($time).ToLocalTime() 
+    return $targetDate
 }
 
-function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $messageAgeInMinutes)
+function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $messageAge)
 {   
     # assignment to global variables 
     $global:logOutputFolder = $outfolder
@@ -307,12 +321,12 @@ function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $message
     $global:encryptionKey = $encryptionKey
     $global:username = $username
 
-    if ($messageAgeInMinutes -ne 0)
+    if ($messageAge -ne 0)
     {
-        $global:maxAgeDayLimit = $messageAgeInMinutes
+        $global:maxAgeLimit = $messageAge
     }
     Write-Host "-----------------------------------------------------------------------------------------------"
-    Write-Host "Folder : $logOutputFolder; Host: $msmqHost; Q: $queueName; Message time in Q (minutes): $maxAgeDayLimit" -ForegroundColor Cyan
+    Write-Host "Folder : $logOutputFolder; Host: $msmqHost; Q: $queueName; Message time in Q (Day): $maxAgeLimit" -ForegroundColor Cyan
     Write-Host "-----------------------------------------------------------------------------------------------"
     # Kick start timer 
     SetupTimer 
@@ -320,4 +334,4 @@ function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $message
 
 # Parameter 
 # Execute main powershell module 
-Main $outfolder $hostname $myQueue $encryptionKey $username $messageAgeInMinutes
+Main $outfolder $hostname $myQueue $encryptionKey $username $messageAge
