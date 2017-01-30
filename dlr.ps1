@@ -332,6 +332,7 @@ function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $message
     SetupTimer 
 }
 
+
 # Parameter 
 # Execute main powershell module 
 Main $outfolder $hostname $myQueue $encryptionKey $username $messageAge
