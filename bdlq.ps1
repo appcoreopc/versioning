@@ -1,6 +1,4 @@
 #
-# A powershell script to read from any ActiveMq provider
-# $MyCredential=New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList "admin", (Get-Content $File | ConvertTo-SecureString -Key $key)
 #
 # Summary : Read messages from a specific queue if it is older than (x) days.
 # Peek messages in a queue to validate age
@@ -10,7 +8,6 @@
 # Example command
 # Reading from a queue with a 5 minute wait time
 # .\dlq.ps1 -outfolder "k:\\log" -hostname @("activemq:tcp://w12dvipfmom04.ldstatdv.net") -myqueue "asbhome" -encryptionKey 1234567890123456 -username si557912 -messageage 1
-
 # Please remember to set Preference to a read/write credential for reading/writting to a queue.
 # Parameters
 
@@ -221,7 +218,9 @@ function global:PeekMessageQueue($queueName, $session, $target)
            {
                #$queueSelector = "JMSCorrelationID='bbbbbbbbbbbbbbbbbbbbbbbbbbbb'" -works
                #$queueSelector = "JMSMessageID='ID:W12DVIPFMOM01-49320-1481955776780-150:1:1:1:1'" -works
-               
+               Write-Host "-----MessageId-------"
+               Write-Host $currentMessage.MessageId
+
                $msgId = [Convert]::ToString($($currentMessage.MessageId))
                $finalId = $msgId.Substring(0, $msgId.Length - 2)
                $queueSelector = "JMSMessageID='$finalId'"
@@ -230,13 +229,15 @@ function global:PeekMessageQueue($queueName, $session, $target)
                $msgReceived = $consumer.Receive(2000)
 
                if ($msgReceived -ne $null) {
+
+                    Write-Host "Archiving $($msgReceived.MessageId) - selector used - $queueSelector" -ForegroundColor Green
                     #Write-Host $msgReceived -ForegroundColor Green 
                     WriteMessage $msgReceived
                }
            }
 
            $count = $count  + 1
-           Write-Host $currentMessage.CorrelationId "message timestamp [$messageTimestamp] diff is : $duration (minutes) - $durationDay (days)" -ForegroundColor DarkYellow
+           Write-Host $currentMessage.CorrelationId "Msg : [$messageTimestamp] : $duration (min) - $durationDay (days)" -ForegroundColor DarkYellow
     }
     
     $queueBrowser.Close()
@@ -270,7 +271,7 @@ function global:CreateConnection($targetConnectionUrl)
 
     try {
         $connection = $factory.CreateConnection($username, $password)
-        Write-Host "Creating connection object : $connection" -ForegroundColor Green
+        Write-Host "Creating connection object : $connection " -ForegroundColor Green
         return $connection
     }
     catch {
