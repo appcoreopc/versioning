@@ -49,35 +49,19 @@ function global:WriteMessage($queueMessage)
 function global:FindCorrelationId($queueMessage)
 {
         $correlationId = $queueMessage.CorrelationId
-        Write-Host "Finding CorrelationId"
-        Write-Host $correlationId
-
+        
         if ([string]::IsNullOrEmpty($queueMessage.CorrelationId))
         {
             $correlationId = $global:defaultFilename
         }
-        Write-Host $correlationId.Trim()
         LogMessageToFile $logOutputFolder $correlationId.Trim() $queueMessage
 }
 
 function global:LogMessageToFile([String] $path, [String]$fileName, $content)
 {
-    Write-Host "target path"
-    Write-Host $path
-    Write-Host "filename"
-    Write-Host $fileName
-
     try {
         $fileToWrite = "$path\$fileName.log"
-
-        Write-Host ""
-        Write-Host $fileToWrite
-
         $jSonContent = GetJsonMessageContent $content
-        Write-Host "-----------------------------------------"
-        Write-Host $jSonContent
-        Write-Host "-----------------------------------------"
-
         [System.IO.File]::AppendAllText($fileToWrite, $jSonContent)
     }
     catch
@@ -137,9 +121,6 @@ function global:GetJsonMessageContent($content)
     return $jsonContent
 }
 
-################################################################################
-#
-################################################################################
 function global:LogToFile([String] $path, [String]$fileName, $content)
 {
     try {
@@ -185,7 +166,7 @@ function global:GetQueueMessage($activeMqHostUrl)
     $connection.Start()
 
     try  {
-            #$session = $connection.CreateSession([Apache.NMS.AcknowledgementMode]::Transactional)
+            
             $session = $connection.CreateSession()
             $target = [Apache.NMS.Util.SessionUtil]::GetDestination($session, "queue://$queueName")
 
@@ -202,48 +183,9 @@ function global:GetQueueMessage($activeMqHostUrl)
 
             $targetTmp = [Apache.NMS.Util.SessionUtil]::GetDestination($session, "queue://$tempQueue")
             Write-Host "Establishing session to Queue :  $target  ---   $target.IsQueue " -ForegroundColor DarkCyan
-
-            # creating message queue consumer.
-            # using the Listener - event listener might not be suitable
-            # as we only logs expired messages in the queue.
             
-            #$consumer =  $session.CreateConsumer($target)
-            $tempMessageWriter =  $session.CreateProducer($targetTmp)
-            
-            Write-Host "Successfully started a connection to server." -ForegroundColor Green
-            
-            # Get old enuff messages from the queue
-            $msgCount = PeekMessageQueue $queueName $session $target
-
-            # while (($imsg = $consumer.Receive([TimeSpan]::FromMilliseconds(2000))) -ne $null)
-            # {
-            #          $receiveMessageCount = $receiveMessageCount + 1
-            #          $messageTimestamp = GetLocalDateTime $imsg.Timestamp
-            #          $currentDate = $(Get-Date)
-            #          $duration = ($currentDate - $messageTimestamp).TotalMinutes
-            #          $durationDay = ($currentDate - $messageTimestamp).TotalDays
-
-            #          Write-Host $imsg.CorrelationId "message timestamp [$messageTimestamp] diff is : $duration (minutes) - $durationDay (days)" -ForegroundColor DarkYellow
-
-            #          if ($duration -lt $maxAgeLimit)
-            #          {
-            #             RewriteBackToQueue $session $tempMessageWriter $imsg
-            #          }
-            #          else
-            #          {
-            #              if ($imsg -ne $null)
-            #             {
-            #                  WriteMessage($imsg)
-            #             }
-
-            #             $receiveMessageCount = $receiveMessageCount  + 1
-            #          }
-            # }
-
-            #RewriteMessageToDLQ $session $targetTmp $target
-            #Write-Host "Purging temp queue destination" -ForegroundColor Yellow
-            #[Apache.NMS.Util.SessionUtil]::DeleteDestination($session, "queue://$tempQueue")
-
+            # Peek and remove message from the queue 
+            PeekMessageQueue $queueName $session $target
     }
     catch {
         Write-Host "Core module error : $_.Exception.Message."
@@ -277,260 +219,33 @@ function global:PeekMessageQueue($queueName, $session, $target)
 
            if ($duration -ge $maxAgeLimit)
            {
-               #$queueSelector = "JMSCorrelationID='bbbbbbbbbbbbbbbbbbbbbbbbbbbb'" works
-               #$queueSelector2 = "JMSMessageID='ID:W12DVIPFMOM01-49320-1481955776780-150:1:1:1:1'" works
+               #$queueSelector = "JMSCorrelationID='bbbbbbbbbbbbbbbbbbbbbbbbbbbb'" -works
+               #$queueSelector = "JMSMessageID='ID:W12DVIPFMOM01-49320-1481955776780-150:1:1:1:1'" -works
                
                $msgId = [Convert]::ToString($($currentMessage.MessageId))
                $finalId = $msgId.Substring(0, $msgId.Length - 2)
                $queueSelector = "JMSMessageID='$finalId'"
-               Write-Host $queueSelector -ForegroundColor Cyan
-
-               Write-Host $queueSelector    
 
                $consumer =  $session.CreateConsumer($target, $queueSelector)
                $msgReceived = $consumer.Receive(2000)
-               #$msgReceived = $consumer.Receive(2000) # works!
 
                if ($msgReceived -ne $null) {
-                    Write-Host $msgReceived -ForegroundColor Green 
+                    #Write-Host $msgReceived -ForegroundColor Green 
                     WriteMessage $msgReceived
                }
-               break;
            }
 
            $count = $count  + 1
            Write-Host $currentMessage.CorrelationId "message timestamp [$messageTimestamp] diff is : $duration (minutes) - $durationDay (days)" -ForegroundColor DarkYellow
     }
-    #$session.Commit()
+    
     $queueBrowser.Close()
-
     if ($consumer -ne $null)
     {
         $consumer.Close()
     }
-    
-    #Write-Host "Total number of records to pop from queue are : $count"
     return $count;
 }
-
-function global:RewriteMessageToDLQ($session, $source, $target)
-{
-      Write-Host "Transfering queues in temp to DLQ."
-
-      $sourceQueue =  $session.CreateConsumer($source)
-      $targetQueue =  $session.CreateProducer($target)
-
-      while (($imsg = $sourceQueue.Receive([TimeSpan]::FromMilliseconds(2000))) -ne $null)
-      {
-          RewriteBackToQueue $session $targetQueue $imsg
-      }
-}
-
-function global:RewriteBackToQueue($session, $producer, $message)
-{
-     if ($message.Text -ne $null)
-     {
-        $queueMsgStructure = $session.CreateTextMessage($message.Text)
-     }
-
-     if ($message.deliveryMode -ne $null)
-     {
-        $queueMsgStructure.deliveryMode = $message.deliveryMode
-     }
-
-     if ($message.redelivered -ne $null) {
-        $queueMsgStructure.redelivered = $message.redelivered
-     }
-
-     if ($message.responseRequired -ne $null) {
-        $queueMsgStructure.responseRequired = $message.responseRequired
-     }
-
-     if ($message.userId -ne $null) {
-        $queueMsgStructure.userId = $message.userId
-     }
-
-     if ($message.brokerPath -ne $null)
-     {
-     $queueMsgStructure.brokerPath = $message.brokerPath
-     }
-
-     if ($message.ProducerId -ne $null) {
-            $queueMsgStructure.ProducerId = $message.ProducerId
-     }
-
-     if ($message.Destination -ne $null) {
-        $queueMsgStructure.Destination = $message.Destination
-     }
-
-     if ($message.TransactionId -ne $queueMsgStructure.TransactionId)
-     {
-        $queueMsgStructure.TransactionId = $message.TransactionId
-     }
-
-     if ( $message.OriginalDestination -ne $null)
-     {
-        $queueMsgStructure.OriginalDestination = $message.OriginalDestination
-     }
-
-     if ($message.OriginalTransactionId -ne $null) {
-        $queueMsgStructure.OriginalTransactionId = $message.OriginalTransactionId
-     }
-
-     if ($message.GroupID -ne $null)
-     {
-        $queueMsgStructure.GroupID = $message.GroupID
-     }
-
-     if ($message.GroupSequence -ne $null)
-     {
-        $queueMsgStructure.GroupSequence = $message.GroupSequence
-     }
-
-     if ($message.CorrelationId -ne $null) {
-        $queueMsgStructure.CorrelationId = $message.CorrelationId
-     }
-
-     if ($message.Persistent -ne $null) {
-        $queueMsgStructure.Persistent = $message.Persistent
-     }
-
-     if ($message.Expiration -ne $null)
-      {
-        $queueMsgStructure.Expiration = $message.Expiration
-      }
-
-      if ($message.Priority -ne $null) {
-        $queueMsgStructure.Priority = $message.Priority
-      }
-
-      if ($message.ReplyTo -ne $null)
-      {
-        $queueMsgStructure.ReplyTo = $message.ReplyTo
-      }
-
-      if ($message.Timestamp -ne $null) {
-        $queueMsgStructure.Timestamp = $message.Timestamp
-      }
-
-      if ($message.MarshalledProperties -ne $null)
-      {
-            $queueMsgStructure.MarshalledProperties = $message.MarshalledProperties
-      }
-
-     if ($message.Type -ne $null)
-     {
-        $queueMsgStructure.Type = $message.Type
-     }
-
-     if ($message.DataStructure -ne $null)
-     {
-        $queueMsgStructure.DataStructure = $message.DataStructure
-     }
-
-     if ($message.TargetConsumerId -ne $null)
-     {
-        $queueMsgStructure.TargetConsumerId = $message.TargetConsumerId
-     }
-
-    if ($message.Compressed -ne $null)
-     {
-        $queueMsgStructure.Compressed = $message.Compressed
-     }
-
-     if ($message.RedeliveryCounter -ne $null)
-     {
-        $queueMsgStructure.RedeliveryCounter = $message.RedeliveryCounter
-     }
-     if ($message.RecievedByDFBridge -ne $null)
-     {
-        $queueMsgStructure.Compressed = $message.RecievedByDFBridge
-     }
-     if ($message.Droppable -ne $null)
-     {
-        $queueMsgStructure.Droppable = $message.Droppable
-     }
-     if ($message.Cluster -ne $null)
-     {
-        $queueMsgStructure.Cluster = $message.Cluster
-     }
-     if ($message.BrokerInTime -ne $null)
-     {
-        $queueMsgStructure.BrokerInTime = $message.BrokerInTime
-     }
-     if ($message.BrokerOutTime -ne $null)
-     {
-        $queueMsgStructure.BrokerOutTime = $message.BrokerOutTime
-     }
-     if ($message.JMSXGroupFirstForConsumer -ne $null)
-     {
-        $queueMsgStructure.JMSXGroupFirstForConsumer = $message.JMSXGroupFirstForConsumer
-     }
-     if ($message.Authorization -ne $null)
-     {
-        $queueMsgStructure.Authorization = $message.Authorization
-     }
-
-     if ($message.Content_Type -ne $null)
-     {
-        $queueMsgStructure.Content_Type = $message.Content_Type
-     }
-
-      $queueMsgStructure.Properties.SetString("MULE_CORRELATION_ID", $message.Properties.GetString("MULE_CORRELATION_ID"))
-      $queueMsgStructure.Properties.SetString("MULE_ENCODING", $message.Properties.GetString("MULE_ENCODING"))
-      $queueMsgStructure.Properties.SetString("MULE_ENDPOINT", $message.Properties.GetString("MULE_ENDPOINT"))
-      $queueMsgStructure.Properties.SetString("MULE_MESSAGE_ID", $message.Properties.GetString("MULE_MESSAGE_ID"))
-      $queueMsgStructure.Properties.SetString("MULE_ORIGINATING_ENDPOINT", $message.Properties.GetString("MULE_ORIGINATING_ENDPOINT"))
-      $queueMsgStructure.Properties.SetString("MULE_ROOT_MESSAGE_ID", $message.Properties.GetString("MULE_ROOT_MESSAGE_ID"))
-      $queueMsgStructure.Properties.SetString("MULE_SESSION", $message.Properties.GetString("MULE_SESSION"))
-    
-      $producer.Send($queueMsgStructure)
-
-        # deliveryMode : '$($content.DeliveryMode)',
-        # redelivered : '$($content.redelivered)',
-        # responseRequired :' $($content.responseRequired)',
-        # userId :' $($content.userId)',
-        # brokerPath :' $($content.brokerPath)',
-        # ProducerId : '$($content.ActiveMQTextMessage.ProducerId)',
-        # Destination : '$($content.ActiveMQTextMessage.Destination)',
-        # TransactionId : '$($content.ActiveMQTextMessage.TransactionId)',
-        # OriginalDestination : '$($content.OriginalDestination)',
-        # MessageId  : '$($content.MessageId)',
-        # OriginalTransactionId : '$($content.OriginalTransactionId)',
-        # GroupID : '$($content.GroupID)',
-        # GroupSequence : '$($content.GroupSequence)',
-        # CorrelationId : '$($content.CorrelationId)',
-        # Persistent : '$($content.Persistent)',
-        # Expiration : '$($content.Expiration)',
-        # Priority : '$($content.Priority)',
-        # ReplyTo : '$($content.ReplyTo)',
-        # Timestamp : '$($content.Timestamp)',
-        # MarshalledProperties : '$($content.MarshalledProperties)',
-        # Type : '$($content.Type)',
-        # DataStructure : '$($content.DataStructure)',
-        # TargetConsumerId : '$($content.TargetConsumerId)',
-        # Compressed : '$($content.Compressed)',
-        # RedeliveryCounter : '$($content.RedeliveryCounter)',
-        # RecievedByDFBridge : '$($content.RecievedByDFBridge)',
-        # Droppable : '$($content.Droppable)',
-        # Cluster : '$($content.Cluster)',
-        # BrokerInTime : '$($content.BrokerInTime)',
-        # BrokerOutTime : '$($content.BrokerOutTime)',
-        # JMSXGroupFirstForConsumer : '$($content.JMSXGroupFirstForConsumer)',
-        # Text : '$($content.Text)',
-        # Authorization : '$($content.Properties.GetString("Authorization"))',
-        # Content_Type : '$($content.Properties.GetString("Content_Type"))',
-        # MULE_CORRELATION_ID : '$($content.Properties.GetString("MULE_CORRELATION_ID"))',
-        # MULE_ENCODING : '$($content.Properties.GetString("MULE_ENCODING"))',
-        # MULE_ENDPOINT : '$($content.Properties.GetString("MULE_ENDPOINT"))',
-        # MULE_MESSAGE_ID : '$($content.Properties.GetString("MULE_MESSAGE_ID"))',
-        # MULE_ORIGINATING_ENDPOINT : '$($content.Properties.GetString("MULE_ORIGINATING_ENDPOINT"))',
-        # MULE_ROOT_MESSAGE_ID : '$($content.Properties.GetString("MULE_ROOT_MESSAGE_ID"))',
-        # MULE_SESSION : '$($content.Properties.GetString("MULE_SESSION"))',
-        # event_type : '$($content.Properties.GetString("event_type"))'
-
-}
-
 
 function global:CreateConnection($targetConnectionUrl)
 {
@@ -570,7 +285,6 @@ function global:RestartTimer()
     Write-Host "Restarting timer."
     $timer.Start();
 }
-
 
 function SetupTimer()
 {
