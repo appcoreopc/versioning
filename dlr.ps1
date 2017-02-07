@@ -1,28 +1,23 @@
 #
-# A powershell script to read from any ActiveMq provider
-# $MyCredential=New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList "admin", (Get-Content $File | ConvertTo-SecureString -Key $key)
-#
 # Summary : Read messages from a specific queue if it is older than (x) days.
 # Peek messages in a queue to validate age
-# If older, read and pop it off the queue.
-# 
-# Feature v0.3 - Array server to pull messages, use jms's correlationId as filename, 
-# Example command 
-# Reading from a queue with a 5 minute wait time 
-# .\dlq.ps1 -outfolder "k:\\log" -hostname "activemq:tcp://localhost" -myqueue "asbhomequote" -encryptionKey 1234567890123456 -username admin -messageAgeInMinutes 5
+# If older, read and pop it off the queue using message selector 
+#
+# Feature v0.3 - Array server to pull messages, use jms's correlationId as filename,
+# Example command
+# Reading from a queue with a 5 minute wait time
+# .\bdlq.ps1 -outfolder "k:\\log" -hostname @("activemq:tcp://w12dvipfmom04.ldstatdv.net") -myqueue "asbhome" -encryptionKey 1234567890123456 -username si557912 -messageage 1
 
-# Please remember to set Preference to a read/write credential for reading/writting to a queue.
 # Parameters
-
 param(
     [Parameter(Mandatory=$true)]
     [string]$outfolder,
     [Parameter(Mandatory=$true)]
     [string[]]$hostname,
     [Parameter(Mandatory=$true)]
-    [string]$myQueue, 
+    [string]$myQueue,
     [Parameter(Mandatory=$true)]
-    [string]$encryptionKey, 
+    [string]$encryptionKey,
     [Parameter(Mandatory=$true)]
     [string]$username,
     [int]$messageAge
@@ -31,48 +26,51 @@ param(
 Add-Type -Path Apache.NMS.dll
 
 $global:queueName = ""
-$global:timer = New-Object System.Timers.Timer(5000)
+$global:timer = New-Object System.Timers.Timer(3000) # setting up timer for 3 second delay.
 $global:runCount = 0
 $global:msmqHost;
-$global:maxAgeLimit = 1  # age of message in day
+$global:maxAgeLimit = 1  # age of message in minutes
 $global:connected = $false
-$global:logOutputFolder = "" 
+$global:logOutputFolder = ""
 $global:encryptionKey;
 $global:username;
-$global:defaultFilename = "unknown" 
+$global:defaultFilename = "unknown"
+$global:qMaxRetry = 10
+$global:qCurrentRetry = 0
+$global:revisitQueue = $false;
+
 
 function global:WriteMessage($queueMessage)
-{   
+{
    FindCorrelationId($queueMessage)
 }
 
 function global:FindCorrelationId($queueMessage)
 {
         $correlationId = $queueMessage.CorrelationId
+        
         if ([string]::IsNullOrEmpty($queueMessage.CorrelationId))
         {
             $correlationId = $global:defaultFilename
         }
-        Write-Host $correlationId.Trim()
         LogMessageToFile $logOutputFolder $correlationId.Trim() $queueMessage
 }
 
 function global:LogMessageToFile([String] $path, [String]$fileName, $content)
-{  
-    try { 
+{
+    try {
         $fileToWrite = "$path\$fileName.log"
         $jSonContent = GetJsonMessageContent $content
         [System.IO.File]::AppendAllText($fileToWrite, $jSonContent)
     }
-    catch 
+    catch
     {
         Write-Host "File write exception : " $_.Exception.Message -ForegroundColor red
     }
 }
 
 function global:GetJsonMessageContent($content)
-{
-    #RecievedByDFBridge - Not a spelling error :) 
+{   
 
     $jsonContent = "{
         commandId : '$($content.commandId)',
@@ -81,33 +79,32 @@ function global:GetJsonMessageContent($content)
         responseRequired :' $($content.responseRequired)',
         userId :' $($content.userId)',
         brokerPath :' $($content.brokerPath)',
-        ProducerId : '$($content.ActiveMQTextMessage.ProducerId)', 
-        Destination : '$($content.ActiveMQTextMessage.Destination)',
-        TransactionId : '$($content.ActiveMQTextMessage.TransactionId)', 
+        ProducerId : '$($content.ProducerId)',
+        Destination : '$($content.Destination)',
+        TransactionId : '$($content.ActiveMQTextMessage.TransactionId)',
         OriginalDestination : '$($content.OriginalDestination)',
         MessageId  : '$($content.MessageId)',
         OriginalTransactionId : '$($content.OriginalTransactionId)',
         GroupID : '$($content.GroupID)',
         GroupSequence : '$($content.GroupSequence)',
-        CorrelationId : '$($content.CorrelationId)', 
+        CorrelationId : '$($content.CorrelationId)',
         Persistent : '$($content.Persistent)',
-        Expiration : '$($content.Expiration)', 
+        Expiration : '$($content.Expiration)',
         Priority : '$($content.Priority)',
         ReplyTo : '$($content.ReplyTo)',
         Timestamp : '$($content.Timestamp)',
-        MarshalledProperties : '$($content.MarshalledProperties)',
-        Type : '$($content.Type)', 
-        DataStructure : '$($content.DataStructure)', 
+        Type : '$($content.Type)',
+        DataStructure : '$($content.DataStructure)',
         TargetConsumerId : '$($content.TargetConsumerId)',
-        Compressed : '$($content.Compressed)', 
-        RedeliveryCounter : '$($content.RedeliveryCounter)', 
-        RecievedByDFBridge : '$($content.RecievedByDFBridge)', 
+        Compressed : '$($content.Compressed)',
+        RedeliveryCounter : '$($content.RedeliveryCounter)',
+        RecievedByDFBridge : '$($content.RecievedByDFBridge)',
         Droppable : '$($content.Droppable)',
         Cluster : '$($content.Cluster)',
         BrokerInTime : '$($content.BrokerInTime)',
         BrokerOutTime : '$($content.BrokerOutTime)',
         JMSXGroupFirstForConsumer : '$($content.JMSXGroupFirstForConsumer)',
-        Text : '$($content.Text)', 
+        Text : '$($content.Text)',
         Authorization : '$($content.Properties.GetString("Authorization"))',
         Content_Type : '$($content.Properties.GetString("Content_Type"))',
         MULE_CORRELATION_ID : '$($content.Properties.GetString("MULE_CORRELATION_ID"))',
@@ -123,16 +120,13 @@ function global:GetJsonMessageContent($content)
     return $jsonContent
 }
 
-################################################################################
-# 
-################################################################################
 function global:LogToFile([String] $path, [String]$fileName, $content)
-{  
-    try { 
+{
+    try {
         $fileToWrite = "$path\$fileName.log"
         [System.IO.File]::AppendAllText($fileToWrite, $content)
     }
-    catch 
+    catch
     {
         Write-Host "File write exception : " $_.Exception.Message -ForegroundColor red
     }
@@ -141,117 +135,144 @@ function global:LogToFile([String] $path, [String]$fileName, $content)
 function global:CleanUp()
 {
     Write-Host "Cleaning up resources used."
-    $timer.Stop 
+    $timer.Stop
 }
 
 function global:GetActiveQueueMessage($activeMqHostUrl)
-{   
-    $hostsPort = @(61616, 61617)
+{
+    #$hostsPort = @(61616, 61617)
+    $hostsPort = @(61616)
+    #$hostsPort = @(61617)
+
     foreach ($hostTarget in $activeMqHostUrl)
     {
         Write-Host "Hosts :[$hostTarget]"
         foreach ($port in $hostsPort)
         {
-            GetQueueMessage($hostTarget + ":" + $port);    
+            GetQueueMessage($hostTarget + ":" + $port);
         }
-    }    
+    }
 }
 
 function global:GetQueueMessage($activeMqHostUrl)
 {
     $receiveMessageCount = 0
+    $firstOccurenceAgeExceedMessageId = ""
+    
     Write-Host "Connecting to the following activemq : $activeMqHostUrl" -ForegroundColor Cyan
     # Create connection
     $connection = CreateConnection $activeMqHostUrl
-    $connection.Start()            
-    
-    try  { 
-            $session = $connection.CreateSession()
+    # Important!!!
+    $connection.Start()
+
+    try  {
+            
+            $session = $connection.CreateSession([Apache.NMS.AcknowledgementMode]::Transactional)
             $target = [Apache.NMS.Util.SessionUtil]::GetDestination($session, "queue://$queueName")
             Write-Host "Establishing session to Queue :  $target  ---   $target.IsQueue " -ForegroundColor DarkCyan
-
-            # creating message queue consumer. 
-            # using the Listener - event listener might not be suitable 
-            # as we only logs expired messages in the queue. 
-            $consumer =  $session.CreateConsumer($target)
-
-            Write-Host "Successfully started a connection to server." -ForegroundColor Green
-            # Get old enuff messages from the queue 
-            $msgCount = PeekMessageQueue $queueName 
-
-            if ($msgCount -gt 0) 
-            {
-                Write-Host "Trying to archive message(s)."
-                
-                while (($imsg = $consumer.Receive([TimeSpan]::FromMilliseconds(5000))) -ne $null) 
-                {                    
-                    $receiveMessageCount = $receiveMessageCount + 1
-                    Write-Host "Popping messages from queue. [$receiveMessageCount]" 
-                    
-                    if ($imsg -ne $null) 
-                    {
-                        WriteMessage($imsg)
-                    }
-
-                    if ( $receiveMessageCount -eq $msgCount)
-                    {
-                        Write-Host "Messages to be taken out of the queue reached." -ForegroundColor Blue
-                        break;
-                    }
-                }
-                
-                if ($receiveMessageCount -eq 0)
-                {
-                    Write-Host "Unable to receive messages from queue." -ForegroundColor Red
-                }
-                Write-Host "Receive message count $receiveMessageCount"
-            }
-
-            Write-Host "Closing connection." -ForegroundColor Yellow
-            $connection.Close()
-            #RestartTimer # Disable this feature for now.
+            # Peek and remove message from the queue 
+            PeekMessageQueue $queueName $session $target
     }
     catch {
         Write-Host "Core module error : $_.Exception.Message."
     }
     finally {
-        CleanUp
+        # Important!!! : Otherwise connection gets locked
+        Write-Host "Closing connection." -ForegroundColor Yellow
+        $session.Close()
+        $connection.Close()
+        #CleanUp
     }
 }
 
-function global:PeekMessageQueue($queueName)
+function global:PeekMessageQueue($queueName, $session, $target)
 {
     $count = 0;
     $targetQueue = $session.GetQueue($queueName)
     $queueBrowser = $session.CreateBrowser($targetQueue)
     $messages = $queueBrowser.GetEnumerator()
+    
+    Write-Host "Peeking message : $targetQueue" -ForegroundColor Yellow
 
-    Write-Host "Peeking message for queue : $targetQueue" -ForegroundColor Yellow
     while ($messages.MoveNext())
     {
-           $currentMessage = $messages.Current
-           $messageTimestamp = GetLocalDateTime $currentMessage.Timestamp
-           $currentDate = $(Get-Date)
-           $duration = ($currentDate - $messageTimestamp).TotalDays
+                $currentMessage = $messages.Current
+                #Write-Host $currentMessage
 
-           # kicks out, if message not old enuff :)
-           if ($duration -lt $maxAgeLimit)
-           {
-             break; 
-           }
-           $count = $count  + 1
-           Write-Host 
-           Write-Host $currentMessage.CorrelationId "message timestamp [$messageTimestamp] diff is : $duration (day)" -ForegroundColor DarkYellow
-    }
+                if ([string]::IsNullOrEmpty($currentMessage.MessageId) -ne $true) 
+                { 
+                        #Write-Host $currentMessage
+                        $messageTimestamp = GetLocalDateTime $currentMessage.Timestamp
+                        $currentDate = $(Get-Date)
+                        $duration = ($currentDate - $messageTimestamp).TotalMinutes
+                        $durationDay = ($currentDate - $messageTimestamp).TotalDays
 
-    $queueBrowser.Close()
-    Write-Host "Total number of records to pop from queue are : $count"
-    return $count;
+                        $msgDuration = [Math]::Floor($duration)
+
+                        Write-Host "MID:" $currentMessage.MessageId "CID:" $currentMessage.CorrelationId "Msg:[$messageTimestamp]: $msgDuration vs $maxAgeLimit " -ForegroundColor White
+
+                        if ([int]$msgDuration -ge [int]$maxAgeLimit)
+                        {
+                            Write-Host "Attempting to Purge"
+                            #$queueSelector = "JMSCorrelationID='47efd180-ba83-11e6-8774-005056bf2b05'" #-works
+                            #$queueSelector = "JMSMessageID='ID:W12DVIPFMOM01-49320-1481955776780-150:1:1:1:1'" -works
+                            
+                            # Truncating the text string based on last ":", otherwise you 
+                            # will not be able to retrieve by MessageId = weirdness
+                            
+                            $msgId = [Convert]::ToString($($currentMessage.MessageId))
+                            $msgLength = $msgId.LastIndexOf(":")
+                            $finalId = $msgId.Substring(0, $msgLength)
+                            $queueSelector = "JMSMessageID='$finalId'"
+
+                            #Write-Host $queueSelector
+                            $consumer =  $session.CreateConsumer($target, $queueSelector)
+                            $msgReceived = $consumer.Receive(3000)
+                            Write-Host $msgReceived -ForegroundColor DarkGray
+
+                            if ($msgReceived -ne $null) 
+                            {
+                                    Write-Host "Archiving $($msgReceived.MessageId) CorrelationId : [$($msgReceived.CorrelationId)] -selector- $queueSelector" -ForegroundColor Green
+                                    Write-Host $msgReceived.CorrelationId -ForegroundColor DarkMagenta
+                                    #Write-Host $msgReceived -ForegroundColor Green     
+                                    WriteMessage $msgReceived
+                            }
+                            else 
+                            {
+                                Write-Host "Revisit queue operation set!"
+                                $revisitQueue = $true
+                            }
+                        }
+                        $count = $count  + 1
+                }
+        }
+
+            if ($revisitQueue -eq $true -and $global:qCurrentRetry -lt $global:qMaxRetry)
+            {
+                Write-Host "There are some messages in the queue. Setting up task to revisit queue again."
+                $revisitQueue = $false
+                $global:qCurrentRetry += 1
+                #Write-Host "Revisit and starting timer : $global:qCurrentRetry to $global:qMaxRetry"
+                $timer.Start();
+            }
+            else 
+            {
+                Write-Host "Halting timer services"
+                CleanUp
+            }
+    
+            $queueBrowser.Close()
+            if ($consumer -ne $null)
+            {
+                $consumer.Close()
+                $session.Commit()
+            }
+            return $count;
 }
 
 function global:CreateConnection($targetConnectionUrl)
 {
-    Write-Host "Preparing connectivity info to $targetConnectionUrl at : $((Get-Date).ToString())" 
+    Write-Host "Preparing connectivity info to $targetConnectionUrl at : $((Get-Date).ToString())"
     $uri = [System.Uri]$targetConnectionUrl
     Write-Host "Target activeMq location : $uri"
     $factory =  New-Object Apache.NMS.NMSConnectionFactory($uri)
@@ -260,19 +281,19 @@ function global:CreateConnection($targetConnectionUrl)
     $key = [System.Text.Encoding]::UTF8.GetBytes($encryptionKey.Trim())
     $File = ".\Password.txt"
 
-    if (![System.IO.File]::Exists($path) -eq $false)  
+    if (![System.IO.File]::Exists($path) -eq $false)
     {
          Write-Host "Unable to find credential 'Password.txt' file. Please ensure this file is in the current folder."  -ForegroundColor Red
          Exit
     }
-   
+
     $MyCredential=New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $username, (Get-Content $File | ConvertTo-SecureString -Key $key)
     $username = $MyCredential.UserName.toString()
     $password = $MyCredential.GetNetworkCredential().Password
-    
+
     try {
         $connection = $factory.CreateConnection($username, $password)
-        Write-Host "Creating connection object : $connection" -ForegroundColor Green
+        Write-Host "Creating connection object : $connection " -ForegroundColor Green
         return $connection
     }
     catch {
@@ -288,7 +309,6 @@ function global:RestartTimer()
     $timer.Start();
 }
 
-
 function SetupTimer()
 {
     Write-Host "Register timer event."
@@ -301,20 +321,20 @@ function SetupTimer()
         GetActiveQueueMessage $msmqHost
     } 
 
-    Write-Host "Restarting Timer"
+    # Write-Host "Restarting Timer"
     $timer.Start()    
 }
 
 function global:GetLocalDateTime($time)
 {
     $epoch = New-Object -Type DateTime -ArgumentList 1970, 1, 1, 0, 0, 0, 0
-    $targetDate = $epoch.AddMilliseconds($time).ToLocalTime() 
+    $targetDate = $epoch.AddMilliseconds($time).ToLocalTime()
     return $targetDate
 }
 
 function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $messageAge)
-{   
-    # assignment to global variables 
+{
+    # assignment to global variables
     $global:logOutputFolder = $outfolder
     $global:msmqHost = $hostname
     $global:queueName = $queue
@@ -325,14 +345,13 @@ function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $message
     {
         $global:maxAgeLimit = $messageAge
     }
+    Write-Host "--------------------------------DLQ Reader Configurations 1.1----------------------------------"
+    Write-Host "Folder : $logOutputFolder; Host: $msmqHost; Q: $queueName; Message time in Q (MINUTES): $maxAgeLimit" -ForegroundColor Cyan
     Write-Host "-----------------------------------------------------------------------------------------------"
-    Write-Host "Folder : $logOutputFolder; Host: $msmqHost; Q: $queueName; Message time in Q (Day): $maxAgeLimit" -ForegroundColor Cyan
-    Write-Host "-----------------------------------------------------------------------------------------------"
-    # Kick start timer 
+
     SetupTimer 
 }
 
-
-# Parameter 
-# Execute main powershell module 
+# Parameter
+# Execute main powershell module
 Main $outfolder $hostname $myQueue $encryptionKey $username $messageAge
