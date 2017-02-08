@@ -71,6 +71,23 @@ function global:LogMessageToFile([String] $path, [String]$fileName, $content)
 
 function global:GetJsonMessageContent($content)
 {   
+    $brokerPathData = "null"
+    if (![string]::IsNullOrEmpty($content.brokerPath) -eq $true)
+    {
+        $brokerPathData = $content.brokerPath;
+    }
+
+    $redeliveredData = "false"
+    if ($content.RedeliveryCounter -gt 0)
+    {
+        $redeliveredData = 'true';
+    }
+
+    $persistentData = "NONPERSISTENT"
+    if ($content.Persistent -eq $true)
+    {
+        $persistentData = 'PERSISTENT';
+    }
 
     $jsonContent = "{
         commandId : '$($content.commandId)',
@@ -146,7 +163,6 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
 
     foreach ($hostTarget in $activeMqHostUrl)
     {
-        Write-Host "Hosts :[$hostTarget]"
         foreach ($port in $hostsPort)
         {
             GetQueueMessage($hostTarget + ":" + $port);
@@ -185,23 +201,44 @@ function global:GetQueueMessage($activeMqHostUrl)
     }
 }
 
+function global:GetQueryTime($minutesEarlier)
+{
+    $dTime = [System.DateTime]::UtcNow.AddMinutes(-$minutesEarlier)
+    $firsTime = New-Object -Type DateTime -ArgumentList 1970, 1, 1, 0, 0, 0, 0
+    $timespan = $dTime - $firsTime
+    return $timespan.TotalMilliseconds;
+}
+
 function global:PeekMessageQueue($queueName, $session, $target)
 {
     $count = 0;
+    $queryTime = global:GetQueryTime $global:maxAgeLimit
+    $queryTime = [Math]::Floor($queryTime)
+    Write-Host "Querytime : [$queryTime]"
+
+    try 
+
+    {
+
     $targetQueue = $session.GetQueue($queueName)
-    $queueBrowser = $session.CreateBrowser($targetQueue)
+    $query = "JMSTimestamp < $queryTime"
+    Write-Host $query 
+    $queueBrowser = $session.CreateBrowser($targetQueue, $query)
+    #$queueBrowser = $session.CreateBrowser($targetQueue)
     $messages = $queueBrowser.GetEnumerator()
-    
+
     Write-Host "Peeking message : $targetQueue" -ForegroundColor Yellow
 
     while ($messages.MoveNext())
     {
                 $currentMessage = $messages.Current
                 #Write-Host $currentMessage
-
+                Write-Host $currentMessage.Timestamp
+                
                 if ([string]::IsNullOrEmpty($currentMessage.MessageId) -ne $true) 
                 { 
                         #Write-Host $currentMessage
+                        
                         $messageTimestamp = GetLocalDateTime $currentMessage.Timestamp
                         $currentDate = $(Get-Date)
                         $duration = ($currentDate - $messageTimestamp).TotalMinutes
@@ -228,7 +265,7 @@ function global:PeekMessageQueue($queueName, $session, $target)
                             #Write-Host $queueSelector
                             $consumer =  $session.CreateConsumer($target, $queueSelector)
                             $msgReceived = $consumer.Receive(3000)
-                            Write-Host $msgReceived -ForegroundColor DarkGray
+                            #Write-Host $msgReceived -ForegroundColor DarkGray
 
                             if ($msgReceived -ne $null) 
                             {
@@ -240,34 +277,62 @@ function global:PeekMessageQueue($queueName, $session, $target)
                             else 
                             {
                                 Write-Host "Revisit queue operation set!"
-                                $revisitQueue = $true
+                                $global:revisitQueue = $true
                             }
                         }
                         $count = $count  + 1
                 }
         }
-
-            if ($revisitQueue -eq $true -and $global:qCurrentRetry -lt $global:qMaxRetry)
-            {
-                Write-Host "There are some messages in the queue. Setting up task to revisit queue again."
-                $revisitQueue = $false
-                $global:qCurrentRetry += 1
-                #Write-Host "Revisit and starting timer : $global:qCurrentRetry to $global:qMaxRetry"
-                $timer.Start();
-            }
-            else 
-            {
-                Write-Host "Halting timer services"
-                CleanUp
-            }
     
+            # if ($global:revisitQueue -eq $true -and $global:qCurrentRetry -lt $global:qMaxRetry)
+            # {
+            #     $global:revisitQueue = $false
+            #     $global:qCurrentRetry += 1
+            #     Write-Host "There are some messages in the queue. Setting up task count [$global:qCurrentRetry] to review queue"
+            #     $global:timer.Interval = 9000
+            #     $global:timer.Start();
+            # }
+            # else 
+            # {
+            #     Write-Host "Halting timer services"
+            #     CleanUp
+            # }
+
+            $global:RevisitQueue
+  
+      }
+    catch {
+        Write-Host "PeekMessageQueue module error : $_.Exception.Message."
+    }
+    finally {
+            Write-Host "Final code block execution"
             $queueBrowser.Close()
             if ($consumer -ne $null)
             {
                 $consumer.Close()
                 $session.Commit()
             }
-            return $count;
+            RevisitQueue
+    }
+    return $count;
+}
+
+function global:RevisitQueue
+{
+      if ($global:revisitQueue -eq $true -and $global:qCurrentRetry -lt $global:qMaxRetry)
+            {
+                $global:revisitQueue = $false
+                $global:qCurrentRetry += 1
+                Write-Host "There are some messages in the queue. Setting up task count [$global:qCurrentRetry] to review queue"
+                $global:timer.Interval = 9000
+                $global:timer.Start();
+            }
+            else 
+            {
+                Write-Host "Halting timer services"
+                CleanUp
+            }
+
 }
 
 function global:CreateConnection($targetConnectionUrl)
@@ -345,7 +410,7 @@ function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $message
     {
         $global:maxAgeLimit = $messageAge
     }
-    Write-Host "--------------------------------DLQ Reader Configurations 1.1----------------------------------"
+    Write-Host "--------------------------------DLQ Reader Configurations 1.1b---------------------------------"
     Write-Host "Folder : $logOutputFolder; Host: $msmqHost; Q: $queueName; Message time in Q (MINUTES): $maxAgeLimit" -ForegroundColor Cyan
     Write-Host "-----------------------------------------------------------------------------------------------"
 
