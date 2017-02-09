@@ -2,8 +2,8 @@
 # Summary : Read messages from a specific queue if it is older than (x) days.
 # Peek messages in a queue to validate age
 # If older, read and pop it off the queue using message selector 
-#
-# Feature v0.3 - Array server to pull messages, use jms's correlationId as filename,
+# Juggernaught
+# Feature v1.1b - Array server to pull messages, use jms's correlationId as filename,
 # Example command
 # Reading from a queue with a 5 minute wait time
 # .\bdlq.ps1 -outfolder "k:\\log" -hostname @("activemq:tcp://w12dvipfmom04.ldstatdv.net") -myqueue "asbhome" -encryptionKey 1234567890123456 -username si557912 -messageage 1
@@ -77,12 +77,6 @@ function global:GetJsonMessageContent($content)
         $brokerPathData = $content.brokerPath;
     }
 
-    $redeliveredData = "false"
-    if ($content.RedeliveryCounter -gt 0)
-    {
-        $redeliveredData = 'true';
-    }
-
     $persistentData = "NONPERSISTENT"
     if ($content.Persistent -eq $true)
     {
@@ -92,7 +86,7 @@ function global:GetJsonMessageContent($content)
     $jsonContent = "{
         commandId : '$($content.commandId)',
         deliveryMode : '$($content.DeliveryMode)',
-        redelivered : '$($content.redelivered)',
+        redelivered : '$($content.NMSRedelivered)',
         responseRequired :' $($content.responseRequired)',
         userId :' $($content.userId)',
         brokerPath :' $($content.brokerPath)',
@@ -197,7 +191,8 @@ function global:GetQueueMessage($activeMqHostUrl)
         Write-Host "Closing connection." -ForegroundColor Yellow
         $session.Close()
         $connection.Close()
-        #CleanUp
+        
+        $global:RevisitQueue
     }
 }
 
@@ -214,10 +209,9 @@ function global:PeekMessageQueue($queueName, $session, $target)
     $count = 0;
     $queryTime = global:GetQueryTime $global:maxAgeLimit
     $queryTime = [Math]::Floor($queryTime)
-    Write-Host "Querytime : [$queryTime]"
+    #Write-Host "Querytime : [$queryTime]"
 
     try 
-
     {
 
     $targetQueue = $session.GetQueue($queueName)
@@ -262,7 +256,9 @@ function global:PeekMessageQueue($queueName, $session, $target)
                             $finalId = $msgId.Substring(0, $msgLength)
                             $queueSelector = "JMSMessageID='$finalId'"
 
+                            #$queueSelector = "JMSCorrelationID='$($currentMessage.MessageId)'" #-works
                             #Write-Host $queueSelector
+
                             $consumer =  $session.CreateConsumer($target, $queueSelector)
                             $msgReceived = $consumer.Receive(3000)
                             #Write-Host $msgReceived -ForegroundColor DarkGray
@@ -282,24 +278,10 @@ function global:PeekMessageQueue($queueName, $session, $target)
                         }
                         $count = $count  + 1
                 }
-        }
-    
-            # if ($global:revisitQueue -eq $true -and $global:qCurrentRetry -lt $global:qMaxRetry)
-            # {
-            #     $global:revisitQueue = $false
-            #     $global:qCurrentRetry += 1
-            #     Write-Host "There are some messages in the queue. Setting up task count [$global:qCurrentRetry] to review queue"
-            #     $global:timer.Interval = 9000
-            #     $global:timer.Start();
-            # }
-            # else 
-            # {
-            #     Write-Host "Halting timer services"
-            #     CleanUp
-            # }
 
+            #break
+        }
             $global:RevisitQueue
-  
       }
     catch {
         Write-Host "PeekMessageQueue module error : $_.Exception.Message."
@@ -315,7 +297,7 @@ function global:PeekMessageQueue($queueName, $session, $target)
             RevisitQueue
     }
     return $count;
-}
+} 
 
 function global:RevisitQueue
 {
@@ -337,6 +319,7 @@ function global:RevisitQueue
 
 function global:CreateConnection($targetConnectionUrl)
 {
+    $targetConnectionUrl = $targetConnectionUrl + "?jms.optimizeAcknowledge=true"
     Write-Host "Preparing connectivity info to $targetConnectionUrl at : $((Get-Date).ToString())"
     $uri = [System.Uri]$targetConnectionUrl
     Write-Host "Target activeMq location : $uri"
@@ -410,7 +393,7 @@ function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $message
     {
         $global:maxAgeLimit = $messageAge
     }
-    Write-Host "--------------------------------DLQ Reader Configurations 1.1b---------------------------------"
+    Write-Host "--------------------------------DLQ Reader Configurations 1.1c---------------------------------"
     Write-Host "Folder : $logOutputFolder; Host: $msmqHost; Q: $queueName; Message time in Q (MINUTES): $maxAgeLimit" -ForegroundColor Cyan
     Write-Host "-----------------------------------------------------------------------------------------------"
 
