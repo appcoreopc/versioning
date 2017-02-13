@@ -2,11 +2,10 @@
 # Summary : Read messages from a specific queue if it is older than (x) days.
 # Peek messages in a queue to validate age
 # If older, read and pop it off the queue using message selector 
-# Juggernaught
 # Feature v1.1b - Array server to pull messages, use jms's correlationId as filename,
 # Example command
 # Reading from a queue with a 5 minute wait time
-# .\bdlq.ps1 -outfolder "k:\\log" -hostname @("activemq:tcp://w12dvipfmom04.ldstatdv.net") -myqueue "asbhome" -encryptionKey 1234567890123456 -username si557912 -messageage 1
+# .\dlq.ps1 -outfolder "k:\\log" -hostname @("activemq:tcp://w12dvipfmom04.ldstatdv.net") -myqueue "asbhome" -encryptionKey 1234567890123456 -username si557912 -messageage 1
 
 # Parameters
 param(
@@ -38,7 +37,6 @@ $global:defaultFilename = "unknown"
 $global:qMaxRetry = 10
 $global:qCurrentRetry = 0
 $global:revisitQueue = $false;
-
 
 function global:WriteMessage($queueMessage)
 {
@@ -82,9 +80,7 @@ function global:GetJsonMessageContent($content)
     {
         $persistentData = 'PERSISTENT';
     }
-	Write-Host "NMSRedelivered status:"
-	Write-Host "$($content.NMSRedelivered)"
-
+	
     $jsonContent = "{
         commandId : '$($content.commandId)',
         deliveryMode : '$persistentData',
@@ -153,15 +149,21 @@ function global:CleanUp()
 
 function global:GetActiveQueueMessage($activeMqHostUrl)
 {
-    #$hostsPort = @(61616, 61617)
-    $hostsPort = @(61616)
+    $hostsPort = @(61616, 61617)
+    #$hostsPort = @(61616)
     #$hostsPort = @(61617)
 
     foreach ($hostTarget in $activeMqHostUrl)
     {
         foreach ($port in $hostsPort)
         {
-            GetQueueMessage($hostTarget + ":" + $port);
+            try { 
+                GetQueueMessage($hostTarget + ":" + $port);
+
+            }
+            catch { 
+                Write-Host "Core module error : $_.Exception.Message."
+            }
         }
     }
 }
@@ -172,13 +174,14 @@ function global:GetQueueMessage($activeMqHostUrl)
     $firstOccurenceAgeExceedMessageId = ""
     
     Write-Host "Connecting to the following activemq : $activeMqHostUrl" -ForegroundColor Cyan
-    # Create connection
-    $connection = CreateConnection $activeMqHostUrl
-    # Important!!!
-    $connection.Start()
 
     try  {
-            
+
+            # Create connection
+            $connection = CreateConnection $activeMqHostUrl
+            # Important!!!
+            $connection.Start()
+
             $session = $connection.CreateSession([Apache.NMS.AcknowledgementMode]::Transactional)
             $target = [Apache.NMS.Util.SessionUtil]::GetDestination($session, "queue://$queueName")
             Write-Host "Establishing session to Queue :  $target  ---   $target.IsQueue " -ForegroundColor DarkCyan
@@ -186,14 +189,13 @@ function global:GetQueueMessage($activeMqHostUrl)
             PeekMessageQueue $queueName $session $target
     }
     catch {
-        Write-Host "Core module error : $_.Exception.Message."
+        Write-Host "GetQueueMessage module error : $_.Exception.Message."
     }
     finally {
         # Important!!! : Otherwise connection gets locked
         Write-Host "Closing connection." -ForegroundColor Yellow
         $session.Close()
         $connection.Close()
-        
         $global:RevisitQueue
     }
 }
@@ -206,13 +208,20 @@ function global:GetQueryTime($minutesEarlier)
     return $timespan.TotalMilliseconds;
 }
 
+function global:GetQueryTimeDays($daysEarlier)
+{
+    $dTime = [System.DateTime]::UtcNow.AddDays(-$daysEarlier)
+    $firsTime = New-Object -Type DateTime -ArgumentList 1970, 1, 1, 0, 0, 0, 0
+    $timespan = $dTime - $firsTime
+    return $timespan.TotalMilliseconds;
+}
+
 function global:PeekMessageQueue($queueName, $session, $target)
 {
     $count = 0;
-    $queryTime = global:GetQueryTime $global:maxAgeLimit
+    $queryTime = global:GetQueryTimeDays $global:maxAgeLimit
     $queryTime = [Math]::Floor($queryTime)
-    #Write-Host "Querytime : [$queryTime]"
-
+    
     try 
     {
 
@@ -228,8 +237,8 @@ function global:PeekMessageQueue($queueName, $session, $target)
     while ($messages.MoveNext())
     {
                 $currentMessage = $messages.Current
-                Write-Host $currentMessage
-                Write-Host $currentMessage.Timestamp
+                #Write-Host $currentMessage
+                #Write-Host $currentMessage.Timestamp
                 
                 if ([string]::IsNullOrEmpty($currentMessage.MessageId) -ne $true) 
                 { 
@@ -240,16 +249,17 @@ function global:PeekMessageQueue($queueName, $session, $target)
                         $duration = ($currentDate - $messageTimestamp).TotalMinutes
                         $durationDay = ($currentDate - $messageTimestamp).TotalDays
 
-                        $msgDuration = [Math]::Floor($duration)
+                        #$msgDuration = [Math]::Floor($duration)
+                        $msgDuration = [Math]::Floor($durationDay)
 
                         Write-Host "MID:" $currentMessage.MessageId "CID:" $currentMessage.CorrelationId "Msg:[$messageTimestamp]: $msgDuration vs $maxAgeLimit " -ForegroundColor White
 
                         if ([int]$msgDuration -ge [int]$maxAgeLimit)
                         {
                             Write-Host "Attempting to Purge"
+
                             #$queueSelector = "JMSCorrelationID='47efd180-ba83-11e6-8774-005056bf2b05'" #-works
                             #$queueSelector = "JMSMessageID='ID:W12DVIPFMOM01-49320-1481955776780-150:1:1:1:1'" -works
-                            
                             # Truncating the text string based on last ":", otherwise you 
                             # will not be able to retrieve by MessageId = weirdness
                             
@@ -395,7 +405,7 @@ function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $message
     {
         $global:maxAgeLimit = $messageAge
     }
-    Write-Host "--------------------------------DLQ Reader Configurations 1.1c---------------------------------"
+    Write-Host "--------------------------------DLQ Reader Configurations 1.1d---------------------------------"
     Write-Host "Folder : $logOutputFolder; Host: $msmqHost; Q: $queueName; Message time in Q (MINUTES): $maxAgeLimit" -ForegroundColor Cyan
     Write-Host "-----------------------------------------------------------------------------------------------"
 
