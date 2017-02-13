@@ -159,7 +159,6 @@ function global:GetActiveQueueMessage($activeMqHostUrl)
         {
             try { 
                 GetQueueMessage($hostTarget + ":" + $port);
-
             }
             catch { 
                 Write-Host "Core module error : $_.Exception.Message."
