@@ -77,19 +77,21 @@ function global:GetJsonMessageContent($content)
         $brokerPathData = $content.brokerPath;
     }
 
-    $persistentData = "NONPERSISTENT"
+    $persistentData = "NON-PERSISTENT"
     if ($content.Persistent -eq $true)
     {
         $persistentData = 'PERSISTENT';
     }
+	Write-Host "NMSRedelivered status:"
+	Write-Host "$($content.NMSRedelivered)"
 
     $jsonContent = "{
         commandId : '$($content.commandId)',
-        deliveryMode : '$($content.DeliveryMode)',
+        deliveryMode : '$persistentData',
         redelivered : '$($content.NMSRedelivered)',
         responseRequired :' $($content.responseRequired)',
         userId :' $($content.userId)',
-        brokerPath :' $($content.brokerPath)',
+        brokerPath :'$brokerPathData',
         ProducerId : '$($content.ProducerId)',
         Destination : '$($content.Destination)',
         TransactionId : '$($content.ActiveMQTextMessage.TransactionId)',
@@ -226,7 +228,7 @@ function global:PeekMessageQueue($queueName, $session, $target)
     while ($messages.MoveNext())
     {
                 $currentMessage = $messages.Current
-                #Write-Host $currentMessage
+                Write-Host $currentMessage
                 Write-Host $currentMessage.Timestamp
                 
                 if ([string]::IsNullOrEmpty($currentMessage.MessageId) -ne $true) 
