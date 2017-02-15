@@ -8,6 +8,9 @@
 # .\dlq.ps1 -outfolder "k:\\log" -hostname @("activemq:tcp://w12dvipfmom04.ldstatdv.net") -myqueue "asbhome" -encryptionKey 1234567890123456 -username si557912 -messageage 1
 
 # Parameters
+
+
+
 param(
     [Parameter(Mandatory=$true)]
     [string]$outfolder,
@@ -22,6 +25,7 @@ param(
     [int]$messageAge
     )
 
+Import-Module IAG_Secure
 Add-Type -Path Apache.NMS.dll
 
 $global:queueName = ""
@@ -36,7 +40,9 @@ $global:username;
 $global:defaultFilename = "unknown"
 $global:qMaxRetry = 10
 $global:qCurrentRetry = 0
-$global:revisitQueue = $false;
+$global:revisitQueue = $false
+$global:timerIntervalTime = 20000 # 20 seconds
+$global:receiveTimeout = 5000
 
 function global:WriteMessage($queueMessage)
 {
@@ -271,7 +277,7 @@ function global:PeekMessageQueue($queueName, $session, $target)
                             #Write-Host $queueSelector
 
                             $consumer =  $session.CreateConsumer($target, $queueSelector)
-                            $msgReceived = $consumer.Receive(3000)
+                            $msgReceived = $consumer.Receive($global:receiveTimeout)
                             #Write-Host $msgReceived -ForegroundColor DarkGray
 
                             if ($msgReceived -ne $null) 
@@ -317,7 +323,7 @@ function global:RevisitQueue
                 $global:revisitQueue = $false
                 $global:qCurrentRetry += 1
                 Write-Host "There are some messages in the queue. Setting up task count [$global:qCurrentRetry] to review queue"
-                $global:timer.Interval = 9000
+                $global:timer.Interval = $global:timerIntervalTime
                 $global:timer.Start();
             }
             else 
@@ -346,7 +352,12 @@ function global:CreateConnection($targetConnectionUrl)
          Exit
     }
 
-    $MyCredential=New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $username, (Get-Content $File | ConvertTo-SecureString -Key $key)
+    #$MyCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $username, (Get-Content $File | ConvertTo-SecureString -Key $key)
+    
+    $MyCredential = Convert-IAGSecureBlobToCredential -String "MIICJQYJKoZIhvcNAQcDoIICFjCCAhICAQAxggGWMIIBkgIBADB6MGMxCzAJBgNVBAYTAk5aMSAwHgYDVQQKExdJQUcgTmV3IFplYWxhbmQgTGltaXRlZDEyMDAGA1UEAxMpSUFHIFRlY2hub2xvZ3kgU2VydmljZXMgSXNzdWluZyBDQTEgLSBERVYCEz4AAABTHoUyR0KRmmYAAQAAAFMwDQYJKoZIhvcNAQEBBQAEggEAKquORFku20MTHCyMaH3eU1b+TOlrRhKYRl1W+G0nSw8IgOcuKJjFEdR5uoqWN599lxKTNpgKeklwZKD/5e6BZLf7F/Fpn4xoEi/XBFoQhh5IjiH9cUbIDqlvPa1fZvd6QY5L/FtmnH0COjXecVHXT7j0WNijgwn8KbD0W/cNfJ7inBojVMR0RYQwgZ2hc7dRe06uxSEolnjsDLlra7yFOohQ1zWWdmk+x0b9D4RQBwBDrw4BvJGF1ytMy1b7tcP5Ap3fio4lIVvOGtTDphxAXVdhbtUOpi6kabGCj+DnZTb3mJcvmx0NkEPamSOSqspi7u5ZhNp7qOd60l+uMJWNyzBzBgkqhkiG9w0BBwEwFAYIKoZIhvcNAwcECA6F2TbBcUV+gFAflDaffeZ9cxJLEmEaqZeii0hHK21y5Bf8GKz2LFQZtp7ao0NL4LLfhNlVpY3hr/C7v5r4ffDc8UDTD2+QwI6MmEs1wthiJr2GSHCa2b+0UQ=="
+
+    #$MyCredential = Convert-IAGSecureBlobToCredential -String "MIICHQYJKoZIhvcNAQcDoIICDjCCAgoCAQAxggGWMIIBkgIBADB6MGMxCzAJBgNVBAYTAk5aMSAwHgYDVQQKExdJQUcgTmV3IFplYWxhbmQgTGltaXRlZDEyMDAGA1UEAxMpSUFHIFRlY2hub2xvZ3kgU2VydmljZXMgSXNzdWluZyBDQTEgLSBERVYCEz4AAABTHoUyR0KRmmYAAQAAAFMwDQYJKoZIhvcNAQEBBQAEggEAUrIfLQnr+f13y63Qqc/qjwIbU2/+4Y88mFrJtLhZyWm7zxRdIN5FO8ZQjnfeiwQi0otZUN5qEEaOwc7VmL0Kiq358A3lk7/8bslv3UfQpykypo6LmkLRqZjhEXBsaZIWb8laFFkXeTxg7IgbLgayrOfRv8MtFKxfUDlMVzlDgY6PjoWD+lwO3Hkvliueg7Jn2gm4So4ghN0UfA7cWyOq3eC5gPkavDPs3IIaGY5b7ICTNnyOAwsgk9njmg62KW1wpq+xh70U6xl2z9Sh3EvzSaDO0bf/xJA2cvQzv9Y8h8Qza+CNrUIIBfZWNwT6LOBO5cIIBwZC6VlJk4Qb+GnxwDBrBgkqhkiG9w0BBwEwFAYIKoZIhvcNAwcECDTVOkJ5OQFugEjInZIKqnmCm2Zn7viqfeKjBR8o1yiJGdjxYF2vBmyqvFMqnrDhT9tLoJG0qTYN/i2rkoDh+k6fkzJs5pI3dM1pxezMoWjoreM="
+
     $username = $MyCredential.UserName.toString()
     $password = $MyCredential.GetNetworkCredential().Password
 
@@ -404,8 +415,9 @@ function Main($outfolder, $hostname, $queue, $encryptionKey, $username, $message
     {
         $global:maxAgeLimit = $messageAge
     }
-    Write-Host "--------------------------------DLQ Reader Configurations 1.1d---------------------------------"
-    Write-Host "Folder : $logOutputFolder; Host: $msmqHost; Q: $queueName; Message time in Q (MINUTES): $maxAgeLimit" -ForegroundColor Cyan
+
+    Write-Host "--------------------------------DLQ Reader Configurations 1.1e (cert support)------------------"
+    Write-Host "Folder : $logOutputFolder; Host: $msmqHost; Q: $queueName; Message time in Q (DAYS): $maxAgeLimit" -ForegroundColor Cyan
     Write-Host "-----------------------------------------------------------------------------------------------"
 
     SetupTimer 
